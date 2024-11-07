@@ -7,13 +7,28 @@ import {
   Receipt, 
   BarChart3, 
   Settings,
-  UserPlus 
+  UserPlus,
+  FolderPlus
 } from 'lucide-react'
 
 const menuItems = [
   { icon: LayoutDashboard, label: 'Dashboard', href: '/dashboard' },
-  { icon: Users, label: 'Clients', href: '/clients' },
-  { icon: Package, label: 'Products', href: '/products' },
+  { 
+    icon: Users, 
+    label: 'Clients', 
+    href: '/clients',
+    subItems: [
+      { icon: FolderPlus, label: 'Client Types', href: '/clients/types' }
+    ]
+  },
+  { 
+    icon: Package, 
+    label: 'Products', 
+    href: '/products',
+    subItems: [
+      { icon: FolderPlus, label: 'Categories', href: '/products/categories' }
+    ]
+  },
   { icon: Receipt, label: 'Sales', href: '/sales' },
   { icon: BarChart3, label: 'Reports', href: '/reports' },
   { 
