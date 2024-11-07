@@ -7,6 +7,7 @@ import { Alert } from '@/components/ui/alert'
 import { Edit2, Trash2, Plus, Search, Filter, X } from 'lucide-react'
 import { useAuth } from '@/lib/context/AuthContext'
 import ClientFormModal from '@/components/ClientFormModal'
+import { useRouter } from 'next/router'
 
 function ClientManagement() {
   const { user: currentUser } = useAuth()
@@ -30,6 +31,9 @@ function ClientManagement() {
   const [boroughs, setBoroughs] = useState([])
   const [neighborhoods, setNeighborhoods] = useState([])
   const [showFilters, setShowFilters] = useState(false)
+
+  const router = useRouter()
+  const { search, highlight } = router.query
 
   // Fetch current user's role and clients list
   useEffect(() => {
@@ -131,7 +135,7 @@ function ClientManagement() {
         client.contact_person?.toLowerCase().includes(search) ||
         client.email?.toLowerCase().includes(search) ||
         client.phone?.toLowerCase().includes(search) ||
-        // Add address search
+        // Update address search to match actual fields
         client.client_addresses?.some(address => 
           address.street_address?.toLowerCase().includes(search) ||
           address.borough?.toLowerCase().includes(search) ||
@@ -189,6 +193,28 @@ function ClientManagement() {
 
     setFilteredClients(filtered)
   }, [clients, searchTerm, selectedType, selectedStatus, selectedBorough, selectedNeighborhood, sortBy, sortOrder])
+
+  // Add to the existing imports
+  useEffect(() => {
+    if (search) {
+      setSearchTerm(decodeURIComponent(search))
+    }
+  }, [search])
+
+  // Add this effect to highlight the client row
+  useEffect(() => {
+    if (highlight) {
+      const element = document.getElementById(`client-${highlight}`)
+      if (element) {
+        element.scrollIntoView({ behavior: 'smooth', block: 'center' })
+        element.classList.add('bg-yellow-50')
+        setTimeout(() => {
+          element.classList.remove('bg-yellow-50')
+          element.classList.add('bg-white', 'transition-colors', 'duration-1000')
+        }, 2000)
+      }
+    }
+  }, [highlight, clients])
 
   const handleSubmit = async (success) => {
     if (success) {
@@ -388,7 +414,11 @@ function ClientManagement() {
             </thead>
             <tbody>
               {filteredClients.map((client) => (
-                <tr key={client.id} className="border-t">
+                <tr 
+                  key={client.id} 
+                  id={`client-${client.id}`}
+                  className="border-t transition-colors duration-300"
+                >
                   <td className="px-6 py-4">{client.name}</td>
                   <td className="px-6 py-4">
                     <div>{client.contact_person}</div>
