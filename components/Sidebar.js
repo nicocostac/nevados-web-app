@@ -1,116 +1,196 @@
+import { useState, useEffect } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/router'
+import { useAuth } from '@/lib/context/AuthContext'
+import { supabase } from '@/lib/supabaseClient'
 import { 
-  LayoutDashboard, 
+  Home, 
   Users, 
   Package, 
-  Receipt, 
-  BarChart3, 
+  ShoppingCart,
   Settings,
-  UserPlus,
-  FolderPlus
+  ChevronDown,
+  ChevronRight
 } from 'lucide-react'
-
-const menuItems = [
-  { icon: LayoutDashboard, label: 'Dashboard', href: '/dashboard' },
-  { 
-    icon: Users, 
-    label: 'Clients', 
-    href: '/clients',
-    subItems: [
-      { icon: FolderPlus, label: 'Client Types', href: '/clients/types' }
-    ]
-  },
-  { 
-    icon: Package, 
-    label: 'Products', 
-    href: '/products',
-    subItems: [
-      { icon: FolderPlus, label: 'Categories', href: '/products/categories' }
-    ]
-  },
-  { icon: Receipt, label: 'Sales', href: '/sales' },
-  { icon: BarChart3, label: 'Reports', href: '/reports' },
-  { 
-    icon: Settings, 
-    label: 'Settings', 
-    href: '/settings',
-    subItems: [
-      { icon: UserPlus, label: 'Users', href: '/settings/users' }
-    ]
-  },
-]
 
 export default function Sidebar() {
   const router = useRouter()
-  const currentPath = router.pathname
+  const { user } = useAuth()
+  const [userRole, setUserRole] = useState(null)
+  const [openMenus, setOpenMenus] = useState({
+    Settings: true
+  })
+
+  // Add effect to fetch user role
+  useEffect(() => {
+    async function fetchUserRole() {
+      if (user?.id) {
+        const { data: profile, error } = await supabase
+          .from('profiles')
+          .select('role')
+          .eq('id', user.id)
+          .single()
+
+        if (error) {
+          console.error('Error fetching user role:', error)
+        } else {
+          setUserRole(profile?.role)
+        }
+      }
+    }
+    fetchUserRole()
+  }, [user?.id])
+
+  const menuItems = [
+    {
+      title: 'Dashboard',
+      icon: Home,
+      href: '/dashboard',
+      roles: ['admin', 'manager', 'salesperson']
+    },
+    {
+      title: 'Clients',
+      icon: Users,
+      href: '/clients',
+      roles: ['admin', 'manager', 'salesperson']
+    },
+    {
+      title: 'Products',
+      icon: Package,
+      href: '/products',
+      roles: ['admin', 'manager', 'salesperson']
+    },
+    {
+      title: 'Sales',
+      icon: ShoppingCart,
+      href: '/sales',
+      roles: ['admin', 'manager', 'salesperson']
+    },
+    {
+      title: 'Settings',
+      icon: Settings,
+      roles: ['admin','manager'],
+      submenu: [
+        {
+          title: 'Users',
+          href: '/settings/users',
+          roles: ['admin']
+        },
+        {
+          title: 'Client Types',
+          href: '/clients/types',
+          roles: ['admin']
+        },
+        {
+          title: 'Product Categories',
+          href: '/products/categories',
+          roles: ['admin','manager']
+        },
+        {
+          title: 'Payment Methods',
+          href: '/settings/payment-methods',
+          roles: ['admin']
+        },
+        {
+          title: 'Locations',
+          href: '/settings/locations',
+          roles: ['admin']
+        }
+      ]
+    }
+  ]
+
+  const toggleMenu = (title) => {
+    setOpenMenus(prev => ({
+      ...prev,
+      [title]: !prev[title]
+    }))
+  }
+
+  const isMenuItemVisible = (roles) => {
+    if (!roles || !userRole) return false
+    return roles.includes(userRole)
+  }
+
+  // Show loading state while fetching role
+  if (!userRole) {
+    return (
+      <div className="bg-white h-full w-64 border-r">
+        <div className="p-4">
+          <h1 className="text-xl font-bold">Nevados</h1>
+        </div>
+        <div className="p-4">Loading...</div>
+      </div>
+    )
+  }
 
   return (
-    <div className="flex flex-col w-64 bg-white border-r border-gray-200">
-      <div className="flex flex-col flex-grow pt-5 pb-4 overflow-y-auto">
-        <div className="flex items-center flex-shrink-0 px-4">
-          <h1 className="text-xl font-semibold text-gray-800">Nevados App</h1>
-        </div>
-        <nav className="mt-5 flex-1 px-2 space-y-1">
-          {menuItems.map((item) => {
-            const isActive = currentPath === item.href || 
-              (item.subItems && item.subItems.some(sub => currentPath === sub.href))
-            const Icon = item.icon
-            
-            return (
-              <div key={item.href}>
-                <Link
-                  href={item.href}
-                  className={`group flex items-center px-2 py-2 text-sm font-medium rounded-md ${
-                    isActive
-                      ? 'bg-gray-100 text-gray-900'
-                      : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
+    <div className="bg-white h-full w-64 border-r">
+      <div className="p-4">
+        <h1 className="text-xl font-bold">Nevados</h1>
+      </div>
+      <nav className="mt-4">
+        {menuItems.map((item) => {
+          const Icon = item.icon
+          const isActive = item.href === router.pathname
+          const hasSubmenu = !!item.submenu
+          const isSubmenuOpen = openMenus[item.title]
+          const visibleSubmenuItems = item.submenu?.filter(subItem => 
+            isMenuItemVisible(subItem.roles)
+          )
+
+          // Skip menu items that user doesn't have access to
+          if (!isMenuItemVisible(item.roles)) return null
+          // Skip menu items with submenu if user doesn't have access to any submenu items
+          if (hasSubmenu && !visibleSubmenuItems?.length) return null
+
+          return (
+            <div key={item.title}>
+              {hasSubmenu ? (
+                <button
+                  onClick={() => toggleMenu(item.title)}
+                  className={`w-full flex items-center px-4 py-2 text-gray-700 hover:bg-gray-100 ${
+                    isActive ? 'bg-gray-100' : ''
                   }`}
                 >
-                  <Icon
-                    className={`mr-3 h-5 w-5 ${
-                      isActive
-                        ? 'text-gray-500'
-                        : 'text-gray-400 group-hover:text-gray-500'
-                    }`}
-                  />
-                  {item.label}
+                  <Icon className="h-5 w-5 mr-2" />
+                  <span>{item.title}</span>
+                  {isSubmenuOpen ? (
+                    <ChevronDown className="h-4 w-4 ml-auto" />
+                  ) : (
+                    <ChevronRight className="h-4 w-4 ml-auto" />
+                  )}
+                </button>
+              ) : (
+                <Link
+                  href={item.href}
+                  className={`flex items-center px-4 py-2 text-gray-700 hover:bg-gray-100 ${
+                    isActive ? 'bg-gray-100' : ''
+                  }`}
+                >
+                  <Icon className="h-5 w-5 mr-2" />
+                  <span>{item.title}</span>
                 </Link>
-
-                {item.subItems && (
-                  <div className="ml-8 space-y-1">
-                    {item.subItems.map((subItem) => {
-                      const isSubActive = currentPath === subItem.href
-                      const SubIcon = subItem.icon
-
-                      return (
-                        <Link
-                          key={subItem.href}
-                          href={subItem.href}
-                          className={`group flex items-center px-2 py-2 text-sm font-medium rounded-md ${
-                            isSubActive
-                              ? 'bg-gray-100 text-gray-900'
-                              : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
-                          }`}
-                        >
-                          <SubIcon
-                            className={`mr-3 h-4 w-4 ${
-                              isSubActive
-                                ? 'text-gray-500'
-                                : 'text-gray-400 group-hover:text-gray-500'
-                            }`}
-                          />
-                          {subItem.label}
-                        </Link>
-                      )
-                    })}
-                  </div>
-                )}
-              </div>
-            )
-          })}
-        </nav>
-      </div>
+              )}
+              {hasSubmenu && isSubmenuOpen && (
+                <div className="ml-4">
+                  {visibleSubmenuItems.map((subItem) => (
+                    <Link
+                      key={subItem.href}
+                      href={subItem.href}
+                      className={`flex items-center px-4 py-2 text-gray-700 hover:bg-gray-100 ${
+                        router.pathname === subItem.href ? 'bg-gray-100' : ''
+                      }`}
+                    >
+                      <span>{subItem.title}</span>
+                    </Link>
+                  ))}
+                </div>
+              )}
+            </div>
+          )
+        })}
+      </nav>
     </div>
   )
-}
+} 

@@ -4,6 +4,7 @@ import { Input } from '@/components/ui/input'
 import { Alert } from '@/components/ui/alert'
 import { X, Calculator } from 'lucide-react'
 import { supabase } from '@/lib/supabaseClient'
+import { formatCurrency } from '@/lib/utils/format'
 
 export default function ClientPriceFormModal({ 
   isOpen, 

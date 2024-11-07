@@ -35,6 +35,54 @@ function ClientManagement() {
   const router = useRouter()
   const { search, highlight } = router.query
 
+  // Add this function before the useEffect
+  const fetchClients = async () => {
+    const { data: clients, error: clientsError } = await supabase
+      .from('clients')
+      .select(`
+        *,
+        client_types!clients_type_id_fkey (
+          id,
+          name
+        ),
+        client_addresses!client_addresses_client_id_fkey (
+          id,
+          street_address,
+          additional_info,
+          borough_id,
+          neighborhood_id,
+          boroughs:boroughs!inner(name),
+          neighborhoods:neighborhoods!inner(name),
+          is_default
+        )
+      `)
+      .order('name')
+
+    if (clientsError) {
+      console.error('Error fetching clients:', clientsError)
+      setMessage('Error fetching clients')
+    } else {
+      setClients(clients || [])
+      setFilteredClients(clients || [])
+
+      // Extract unique boroughs and neighborhoods
+      const uniqueBoroughs = new Set()
+      const uniqueNeighborhoods = new Set()
+      
+      clients.forEach(client => {
+        if (client.client_addresses) {
+          client.client_addresses.forEach(address => {
+            if (address.boroughs?.name) uniqueBoroughs.add(address.boroughs.name)
+            if (address.neighborhoods?.name) uniqueNeighborhoods.add(address.neighborhoods.name)
+          })
+        }
+      })
+
+      setBoroughs(Array.from(uniqueBoroughs).sort())
+      setNeighborhoods(Array.from(uniqueNeighborhoods).sort())
+    }
+  }
+
   // Fetch current user's role and clients list
   useEffect(() => {
     async function fetchData() {
@@ -63,47 +111,8 @@ function ClientManagement() {
             setClientTypes(types)
           }
 
-          // Fetch clients with all related data
-          const { data: clients, error: clientsError } = await supabase
-            .from('clients')
-            .select(`
-              *,
-              client_types!clients_type_id_fkey (
-                id,
-                name
-              ),
-              client_addresses!client_addresses_client_id_fkey (
-                id,
-                street_address,
-                borough,
-                neighborhood,
-                is_default
-              )
-            `)
-            .order('name')
-
-          if (clientsError) {
-            console.error('Error fetching clients:', clientsError)
-          } else {
-            setClients(clients)
-            setFilteredClients(clients)
-
-            // Extract unique boroughs and neighborhoods from all addresses
-            const uniqueBoroughs = new Set()
-            const uniqueNeighborhoods = new Set()
-            
-            clients.forEach(client => {
-              if (client.client_addresses) {
-                client.client_addresses.forEach(address => {
-                  if (address.borough) uniqueBoroughs.add(address.borough)
-                  if (address.neighborhood) uniqueNeighborhoods.add(address.neighborhood)
-                })
-              }
-            })
-
-            setBoroughs(Array.from(uniqueBoroughs).sort())
-            setNeighborhoods(Array.from(uniqueNeighborhoods).sort())
-          }
+          // Fetch clients
+          await fetchClients()
 
           // Fetch products for special prices
           const { data: products, error: productsError } = await supabase
@@ -138,8 +147,8 @@ function ClientManagement() {
         // Update address search to match actual fields
         client.client_addresses?.some(address => 
           address.street_address?.toLowerCase().includes(search) ||
-          address.borough?.toLowerCase().includes(search) ||
-          address.neighborhood?.toLowerCase().includes(search)
+          address.boroughs?.name?.toLowerCase().includes(search) ||
+          address.neighborhoods?.name?.toLowerCase().includes(search)
         )
       )
     }
@@ -158,7 +167,7 @@ function ClientManagement() {
     if (selectedBorough) {
       filtered = filtered.filter(client => 
         client.client_addresses?.some(address => 
-          address.borough?.toLowerCase() === selectedBorough.toLowerCase()
+          address.boroughs?.name?.toLowerCase() === selectedBorough.toLowerCase()
         )
       )
     }
@@ -167,7 +176,7 @@ function ClientManagement() {
     if (selectedNeighborhood) {
       filtered = filtered.filter(client => 
         client.client_addresses?.some(address => 
-          address.neighborhood?.toLowerCase() === selectedNeighborhood.toLowerCase()
+          address.neighborhoods?.name?.toLowerCase() === selectedNeighborhood.toLowerCase()
         )
       )
     }
@@ -251,15 +260,19 @@ function ClientManagement() {
     try {
       const { error } = await supabase
         .from('clients')
-        .delete()
+        .update({ status: 'inactive' })
         .eq('id', clientId)
 
-      if (error) throw error
-
-      setClients(clients.filter(c => c.id !== clientId))
-      setMessage('Client deleted successfully')
+      if (error) {
+        console.error('Error deactivating client:', error)
+        setMessage('Error deactivating client')
+      } else {
+        setMessage('Client deactivated successfully')
+        fetchClients() // Refresh the clients list
+      }
     } catch (error) {
-      console.error('Error deleting client:', error)
+      console.error('Error:', error)
+      setMessage(error.message)
     }
   }
 

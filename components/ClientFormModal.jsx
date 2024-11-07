@@ -7,6 +7,7 @@ import { supabase } from '@/lib/supabaseClient'
 import { useAuth } from '@/lib/context/AuthContext'
 import AddressFormModal from './AddressFormModal'
 import ClientPriceFormModal from './ClientPriceFormModal'
+import { formatCurrency } from '@/lib/utils/format'
 
 export default function ClientFormModal({ 
   isOpen, 
@@ -76,7 +77,11 @@ export default function ClientFormModal({
   const fetchAddresses = async (clientId) => {
     const { data, error } = await supabase
       .from('client_addresses')
-      .select('*')
+      .select(`
+        *,
+        boroughs:boroughs!inner(name),
+        neighborhoods:neighborhoods!inner(name)
+      `)
       .eq('client_id', clientId)
       .order('is_default', { ascending: false })
 
@@ -88,29 +93,36 @@ export default function ClientFormModal({
   }
 
   const handleAddressSubmit = async (addressData) => {
-    const newAddress = {
-      ...addressData,
-      client_id: editingClient?.id
-    }
+    try {
+      const isFirstAddress = addresses.length === 0;
+      const newAddress = {
+        ...addressData,
+        is_default: isFirstAddress ? true : addressData.is_default,
+        client_id: editingClient?.id
+      };
 
-    if (editingAddress) {
-      const { error } = await supabase
-        .from('client_addresses')
-        .update(newAddress)
-        .eq('id', editingAddress.id)
+      if (editingAddress) {
+        const { error } = await supabase
+          .from('client_addresses')
+          .update(newAddress)
+          .eq('id', editingAddress.id);
 
-      if (error) throw error
-    } else {
-      const { error } = await supabase
-        .from('client_addresses')
-        .insert([newAddress])
+        if (error) throw error;
+      } else {
+        const { error } = await supabase
+          .from('client_addresses')
+          .insert([newAddress]);
 
-      if (error) throw error
-    }
+        if (error) throw error;
+      }
 
-    // Refresh addresses list
-    if (editingClient?.id) {
-      await fetchAddresses(editingClient.id)
+      // Refresh addresses list
+      if (editingClient?.id) {
+        await fetchAddresses(editingClient.id);
+      }
+    } catch (error) {
+      console.error('Error handling address:', error);
+      throw error;
     }
   }
 
@@ -302,12 +314,18 @@ export default function ClientFormModal({
   const handleNewAddress = (addressData) => {
     // For new clients, store addresses in state to be saved after client creation
     if (!editingClient) {
-      setAddresses([...addresses, addressData])
+      // Set is_default to true if this is the first address
+      const isFirstAddress = addresses.length === 0;
+      const newAddress = {
+        ...addressData,
+        is_default: isFirstAddress
+      };
+      setAddresses([...addresses, newAddress]);
     } else {
       // For existing clients, save address directly to database
-      handleAddressSubmit(addressData)
+      handleAddressSubmit(addressData);
     }
-  }
+  };
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
@@ -398,7 +416,7 @@ export default function ClientFormModal({
                         )}
                       </div>
                       <div className="text-sm text-gray-500">
-                        {address.borough}, {address.neighborhood}
+                        {address.boroughs?.name}, {address.neighborhoods?.name}
                       </div>
                       {address.additional_info && (
                         <div className="text-sm text-gray-500">{address.additional_info}</div>
@@ -445,7 +463,7 @@ export default function ClientFormModal({
                         )}
                       </div>
                       <div className="text-sm text-gray-500">
-                        {address.borough}, {address.neighborhood}
+                        {address.boroughs?.name}, {address.neighborhoods?.name}
                       </div>
                       {address.additional_info && (
                         <div className="text-sm text-gray-500">{address.additional_info}</div>
@@ -496,8 +514,8 @@ export default function ClientFormModal({
                   <div>
                     <div className="font-medium">{price.product.name}</div>
                     <div className="text-sm text-gray-500">
-                      Default: ${price.product.default_price} | 
-                      Special: ${price.final_price} ({price.discount_percentage}% off)
+                      Default: {formatCurrency(price.product.default_price)} | 
+                      Special: {formatCurrency(price.final_price)} ({price.discount_percentage}% off)
                     </div>
                     <div className="text-sm text-gray-500">
                       Valid: {new Date(price.valid_from).toLocaleDateString()}
@@ -542,8 +560,8 @@ export default function ClientFormModal({
                       {products.find(p => p.id === price.product_id)?.name}
                     </div>
                     <div className="text-sm text-gray-500">
-                      Default: ${products.find(p => p.id === price.product_id)?.default_price.toFixed(2)} | 
-                      Special: ${price.final_price} ({price.discount_percentage}% off)
+                      Default: {formatCurrency(products.find(p => p.id === price.product_id)?.default_price)} | 
+                      Special: {formatCurrency(price.final_price)} ({price.discount_percentage}% off)
                     </div>
                     <div className="text-sm text-gray-500">
                       Valid: {new Date(price.valid_from).toLocaleDateString()}

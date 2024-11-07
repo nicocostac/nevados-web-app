@@ -6,6 +6,7 @@ import { Alert } from '@/components/ui/alert'
 import { Edit2, Trash2, Plus } from 'lucide-react'
 import { useAuth } from '@/lib/context/AuthContext'
 import ProductFormModal from '@/components/ProductFormModal'
+import { formatCurrency } from '@/lib/utils/format'
 
 function ProductManagement() {
   const { user: currentUser } = useAuth()
@@ -183,7 +184,9 @@ function ProductManagement() {
                 <tr key={product.id} className="border-t">
                   <td className="px-6 py-4">{product.name}</td>
                   <td className="px-6 py-4">{product.product_categories?.name}</td>
-                  <td className="px-6 py-4">${product.default_price.toFixed(2)}</td>
+                  <td className="px-6 py-4">
+                    {formatCurrency(product.default_price)}
+                  </td>
                   <td className="px-6 py-4">{product.unit_of_sale}</td>
                   <td className="px-6 py-4">
                     <span className={`px-2 py-1 rounded text-sm ${

@@ -1,111 +1,220 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Alert } from '@/components/ui/alert'
 import { X } from 'lucide-react'
 import { supabase } from '@/lib/supabaseClient'
 
-export default function AddressFormModal({ 
-  isOpen, 
-  onClose, 
-  onSubmit, 
+export default function AddressFormModal({
+  isOpen,
+  onClose,
+  onSubmit,
   editingAddress = null
 }) {
   const [formData, setFormData] = useState({
-    street_address: editingAddress?.street_address || '',
-    borough: editingAddress?.borough || '',
-    neighborhood: editingAddress?.neighborhood || '',
-    additional_info: editingAddress?.additional_info || '',
-    is_default: editingAddress?.is_default || false
+    street_address: '',
+    borough_id: '',
+    neighborhood_id: '',
+    additional_info: '',
+    is_default: false
   })
-  const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState(null)
+  const [boroughs, setBoroughs] = useState([])
+  const [neighborhoods, setNeighborhoods] = useState([])
+
+  useEffect(() => {
+    fetchBoroughs()
+  }, [])
+
+  // Fetch neighborhoods when borough is selected
+  useEffect(() => {
+    if (formData.borough_id) {
+      fetchNeighborhoods(formData.borough_id)
+    } else {
+      setNeighborhoods([])
+      setFormData(prev => ({ ...prev, neighborhood_id: '' }))
+    }
+  }, [formData.borough_id])
+
+  // Set form data when editing
+  useEffect(() => {
+    if (editingAddress) {
+      setFormData({
+        street_address: editingAddress.street_address || '',
+        borough_id: editingAddress.borough_id || '',
+        neighborhood_id: editingAddress.neighborhood_id || '',
+        additional_info: editingAddress.additional_info || '',
+        is_default: editingAddress.is_default || false
+      })
+      if (editingAddress.borough_id) {
+        fetchNeighborhoods(editingAddress.borough_id)
+      }
+    } else {
+      setFormData({
+        street_address: '',
+        borough_id: '',
+        neighborhood_id: '',
+        additional_info: '',
+        is_default: false
+      })
+    }
+  }, [editingAddress])
+
+  const fetchBoroughs = async () => {
+    const { data, error } = await supabase
+      .from('boroughs')
+      .select('*')
+      .eq('status', 'active')
+      .order('name')
+
+    if (error) {
+      console.error('Error fetching boroughs:', error)
+      setError('Error fetching boroughs')
+    } else {
+      setBoroughs(data || [])
+    }
+  }
+
+  const fetchNeighborhoods = async (boroughId) => {
+    const { data, error } = await supabase
+      .from('neighborhoods')
+      .select('*')
+      .eq('borough_id', boroughId)
+      .eq('status', 'active')
+      .order('name')
+
+    if (error) {
+      console.error('Error fetching neighborhoods:', error)
+      setError('Error fetching neighborhoods')
+    } else {
+      setNeighborhoods(data || [])
+    }
+  }
 
   if (!isOpen) return null
 
   const handleSubmit = async (e) => {
     e.preventDefault()
-    setIsLoading(true)
     setError(null)
 
+    if (!formData.borough_id) {
+      setError('Please select a borough')
+      return
+    }
+
+    if (!formData.neighborhood_id) {
+      setError('Please select a neighborhood')
+      return
+    }
+
     try {
-      await onSubmit(formData)
+      // Only send the IDs and other necessary data
+      const addressData = {
+        street_address: formData.street_address,
+        borough_id: formData.borough_id,
+        neighborhood_id: formData.neighborhood_id,
+        additional_info: formData.additional_info,
+        is_default: formData.is_default
+      }
+
+      await onSubmit(addressData)
       onClose()
     } catch (error) {
       setError(error.message)
-    } finally {
-      setIsLoading(false)
     }
   }
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-      <div className="bg-white rounded-lg p-6 w-full max-w-md relative">
-        <button
-          onClick={onClose}
-          className="absolute top-4 right-4 text-gray-500 hover:text-gray-700"
-        >
-          <X className="h-5 w-5" />
-        </button>
-
-        <h2 className="text-xl font-semibold mb-6">
-          {editingAddress ? 'Edit Address' : 'Add Address'}
-        </h2>
+      <div className="bg-white rounded-lg p-6 w-full max-w-md">
+        <div className="flex justify-between items-center mb-4">
+          <h2 className="text-xl font-semibold">
+            {editingAddress ? 'Edit Address' : 'New Address'}
+          </h2>
+          <button onClick={onClose}>
+            <X className="h-5 w-5" />
+          </button>
+        </div>
 
         {error && (
-          <Alert variant="destructive" className="mb-4">{error}</Alert>
+          <Alert variant="destructive" className="mb-4">
+            {error}
+          </Alert>
         )}
 
         <form onSubmit={handleSubmit} className="space-y-4">
-          <Input
-            name="street_address"
-            placeholder="Street Address"
-            value={formData.street_address}
-            onChange={(e) => setFormData(prev => ({ ...prev, street_address: e.target.value }))}
-            required
-          />
-
-          <div className="grid grid-cols-2 gap-4">
+          <div>
+            <label className="block mb-2">Street Address</label>
             <Input
-              name="borough"
-              placeholder="Borough"
-              value={formData.borough}
-              onChange={(e) => setFormData(prev => ({ ...prev, borough: e.target.value }))}
-              required
-            />
-
-            <Input
-              name="neighborhood"
-              placeholder="Neighborhood"
-              value={formData.neighborhood}
-              onChange={(e) => setFormData(prev => ({ ...prev, neighborhood: e.target.value }))}
+              type="text"
+              value={formData.street_address}
+              onChange={(e) => setFormData({ ...formData, street_address: e.target.value })}
               required
             />
           </div>
 
-          <Input
-            name="additional_info"
-            placeholder="Additional Information"
-            value={formData.additional_info}
-            onChange={(e) => setFormData(prev => ({ ...prev, additional_info: e.target.value }))}
-          />
+          <div>
+            <label className="block mb-2">Borough</label>
+            <select
+              value={formData.borough_id}
+              onChange={(e) => setFormData({ ...formData, borough_id: e.target.value })}
+              className="w-full p-2 border rounded"
+              required
+            >
+              <option value="">Select Borough</option>
+              {boroughs.map(borough => (
+                <option key={borough.id} value={borough.id}>
+                  {borough.name}
+                </option>
+              ))}
+            </select>
+          </div>
 
-          <label className="flex items-center space-x-2">
+          <div>
+            <label className="block mb-2">Neighborhood</label>
+            <select
+              value={formData.neighborhood_id}
+              onChange={(e) => setFormData({ ...formData, neighborhood_id: e.target.value })}
+              className="w-full p-2 border rounded"
+              required
+              disabled={!formData.borough_id}
+            >
+              <option value="">Select Neighborhood</option>
+              {neighborhoods.map(neighborhood => (
+                <option key={neighborhood.id} value={neighborhood.id}>
+                  {neighborhood.name}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label className="block mb-2">Additional Information</label>
+            <Input
+              type="text"
+              value={formData.additional_info}
+              onChange={(e) => setFormData({ ...formData, additional_info: e.target.value })}
+              placeholder="Apartment number, floor, etc."
+            />
+          </div>
+
+          <div className="flex items-center gap-2">
             <input
               type="checkbox"
+              id="is_default"
               checked={formData.is_default}
-              onChange={(e) => setFormData(prev => ({ ...prev, is_default: e.target.checked }))}
+              onChange={(e) => setFormData({ ...formData, is_default: e.target.checked })}
               className="rounded border-gray-300"
             />
-            <span>Set as default address</span>
-          </label>
+            <label htmlFor="is_default">Set as default address</label>
+          </div>
 
-          <div className="flex gap-2">
-            <Button type="submit" disabled={isLoading}>
-              {isLoading ? 'Saving...' : editingAddress ? 'Update' : 'Add'}
-            </Button>
-            <Button type="button" variant="outline" onClick={onClose}>
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="ghost" onClick={onClose}>
               Cancel
+            </Button>
+            <Button type="submit">
+              {editingAddress ? 'Update' : 'Create'}
             </Button>
           </div>
         </form>
