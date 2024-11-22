@@ -41,6 +41,19 @@ function SalesManagement() {
     boroughs: [],
     neighborhoods: []
   })
+  const [selectedClient, setSelectedClient] = useState(null);
+  const [selectedProduct, setSelectedProduct] = useState(null);
+  const [price, setPrice] = useState(0);
+  const [formData, setFormData] = useState({
+    product_id: '',
+    quantity: 1,
+    unit_price: 0,
+    total: 0,
+    deliveryStartDate: '',
+    deliveryEndDate: '',
+    paymentStatus: ''
+  });
+  const [error, setError] = useState('');
 
   useEffect(() => {
     fetchSales()
@@ -70,22 +83,22 @@ function SalesManagement() {
         payment_date,
         notes,
         client:clients(name),
-        delivery_address:client_addresses!inner(
+        delivery_address:client_addresses!left(
           id,
           street_address,
           additional_info,
           borough_id,
           neighborhood_id,
-          boroughs:boroughs!inner(name),
-          neighborhoods:neighborhoods!inner(name)
+          boroughs:boroughs!left(name),
+          neighborhoods:neighborhoods!left(name)
         )
       `)
 
     if (filters.borough) {
-      query = query.eq('delivery_address.boroughs.name', filters.borough)
+      query = query.filter('delivery_address.boroughs.name', 'eq', filters.borough)
     }
     if (filters.neighborhood) {
-      query = query.eq('delivery_address.neighborhoods.name', filters.neighborhood)
+      query = query.filter('delivery_address.neighborhoods.name', 'eq', filters.neighborhood)
     }
     if (filters.clientId) {
       query = query.eq('client_id', filters.clientId)
@@ -106,7 +119,9 @@ function SalesManagement() {
       query = query.eq('payment_status', filters.paymentStatus)
     }
 
-    const { data: salesData, error: salesError } = await query.order('created_at', { ascending: false })
+    const { data: salesData, error: salesError } = await query
+      .order('sale_date', { ascending: false })
+      .order('id', { ascending: false })
 
     if (salesError) {
       console.error('Error fetching sales:', salesError)
@@ -335,6 +350,51 @@ function SalesManagement() {
       paymentStatus: ''
     })
   }
+
+  const handleProductSelect = async (productId) => {
+    try {
+      if (!productId) return;
+
+      setSelectedProduct(productId);
+      
+      // Get the current date in YYYY-MM-DD format
+      const today = new Date().toISOString().split('T')[0];
+      
+      // Call the function with the updated parameters
+      const { data, error } = await supabase.rpc('get_product_price_at_date', {
+        product_id: productId,
+        target_date: today,
+        client_id: selectedClient?.id || null
+      });
+
+      if (error) {
+        console.error('Error fetching product price:', error);
+        return;
+      }
+
+      // Log the response for debugging
+      console.log('Price response:', data);
+
+      // The data will be an array with one row containing price and price_type
+      const priceInfo = Array.isArray(data) && data.length > 0 ? data[0] : { price: 0, price_type: 'none' };
+      
+      // Update the form data with the returned price
+      setFormData(prev => ({
+        ...prev,
+        product_id: productId,
+        unit_price: Number(priceInfo.price || 0),
+        total: Number(priceInfo.price || 0) * prev.quantity
+      }));
+      
+    } catch (error) {
+      console.error('Error in handleProductSelect:', error);
+      setFormData(prev => ({
+        ...prev,
+        unit_price: 0,
+        total: 0
+      }));
+    }
+  };
 
   return (
     <div className="space-y-6">

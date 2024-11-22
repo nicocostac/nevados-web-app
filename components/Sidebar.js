@@ -10,7 +10,8 @@ import {
   ShoppingCart,
   Settings,
   ChevronDown,
-  ChevronRight
+  ChevronRight,
+  BarChart2
 } from 'lucide-react'
 
 export default function Sidebar() {
@@ -18,7 +19,8 @@ export default function Sidebar() {
   const { user } = useAuth()
   const [userRole, setUserRole] = useState(null)
   const [openMenus, setOpenMenus] = useState({
-    Settings: true
+    Settings: true,
+    Reports: true
   })
 
   // Add effect to fetch user role
@@ -65,6 +67,18 @@ export default function Sidebar() {
       icon: ShoppingCart,
       href: '/sales',
       roles: ['admin', 'manager', 'salesperson']
+    },
+    {
+      title: 'Reports',
+      icon: BarChart2,
+      roles: ['admin', 'manager'],
+      submenu: [
+        {
+          title: 'Delivery Heatmap',
+          href: '/heatmap',
+          roles: ['admin', 'manager']
+        }
+      ]
     },
     {
       title: 'Settings',

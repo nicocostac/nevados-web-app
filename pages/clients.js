@@ -4,7 +4,7 @@ import { supabase } from '@/lib/supabaseClient'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Alert } from '@/components/ui/alert'
-import { Edit2, Trash2, Plus, Search, Filter, X } from 'lucide-react'
+import { Edit2, Trash2, Plus, Search, Filter, X, Mail, Phone } from 'lucide-react'
 import { useAuth } from '@/lib/context/AuthContext'
 import ClientFormModal from '@/components/ClientFormModal'
 import { useRouter } from 'next/router'
@@ -24,6 +24,7 @@ function ClientManagement() {
   const [searchTerm, setSearchTerm] = useState('')
   const [selectedType, setSelectedType] = useState('')
   const [selectedStatus, setSelectedStatus] = useState('')
+  const [selectedTj, setSelectedTj] = useState('')
   const [selectedBorough, setSelectedBorough] = useState('')
   const [selectedNeighborhood, setSelectedNeighborhood] = useState('')
   const [sortBy, setSortBy] = useState('name')
@@ -141,15 +142,8 @@ function ClientManagement() {
       const search = searchTerm.toLowerCase()
       filtered = filtered.filter(client => 
         client.name?.toLowerCase().includes(search) ||
-        client.contact_person?.toLowerCase().includes(search) ||
         client.email?.toLowerCase().includes(search) ||
-        client.phone?.toLowerCase().includes(search) ||
-        // Update address search to match actual fields
-        client.client_addresses?.some(address => 
-          address.street_address?.toLowerCase().includes(search) ||
-          address.boroughs?.name?.toLowerCase().includes(search) ||
-          address.neighborhoods?.name?.toLowerCase().includes(search)
-        )
+        client.phone?.toLowerCase().includes(search)
       )
     }
 
@@ -161,6 +155,11 @@ function ClientManagement() {
     // Status filter
     if (selectedStatus) {
       filtered = filtered.filter(client => client.status === selectedStatus)
+    }
+
+    // TJ filter
+    if (selectedTj) {
+      filtered = filtered.filter(client => client.is_tj === (selectedTj === 'true'))
     }
 
     // Borough filter
@@ -194,6 +193,10 @@ function ClientManagement() {
         case 'status':
           comparison = a.status.localeCompare(b.status)
           break
+        case 'tj':
+          // Sort TJ clients first when ascending, non-TJ first when descending
+          comparison = (b.is_tj ? 1 : 0) - (a.is_tj ? 1 : 0)
+          break
         default:
           comparison = a.name.localeCompare(b.name)
       }
@@ -201,7 +204,7 @@ function ClientManagement() {
     })
 
     setFilteredClients(filtered)
-  }, [clients, searchTerm, selectedType, selectedStatus, selectedBorough, selectedNeighborhood, sortBy, sortOrder])
+  }, [clients, searchTerm, selectedType, selectedStatus, selectedTj, selectedBorough, selectedNeighborhood, sortBy, sortOrder])
 
   // Add to the existing imports
   useEffect(() => {
@@ -346,6 +349,16 @@ function ClientManagement() {
             </select>
 
             <select
+              value={selectedTj}
+              onChange={(e) => setSelectedTj(e.target.value)}
+              className="w-full p-2 border rounded"
+            >
+              <option value="">All Clients</option>
+              <option value="true">TJ Only</option>
+              <option value="false">Non-TJ Only</option>
+            </select>
+
+            <select
               value={selectedBorough}
               onChange={(e) => setSelectedBorough(e.target.value)}
               className="w-full p-2 border rounded"
@@ -376,6 +389,7 @@ function ClientManagement() {
                 <option value="name">Sort by Name</option>
                 <option value="type">Sort by Type</option>
                 <option value="status">Sort by Status</option>
+                <option value="tj">Sort by TJ Status</option>
               </select>
               <Button
                 variant="outline"
@@ -387,7 +401,7 @@ function ClientManagement() {
           </div>
         )}
 
-        {(searchTerm || selectedType || selectedStatus || selectedBorough || selectedNeighborhood) && (
+        {(searchTerm || selectedType || selectedStatus || selectedTj || selectedBorough || selectedNeighborhood) && (
           <div className="flex items-center gap-2">
             <span className="text-sm text-gray-500">
               {filteredClients.length} results found
@@ -399,6 +413,7 @@ function ClientManagement() {
                 setSearchTerm('')
                 setSelectedType('')
                 setSelectedStatus('')
+                setSelectedTj('')
                 setSelectedBorough('')
                 setSelectedNeighborhood('')
                 setSortBy('name')
@@ -419,9 +434,10 @@ function ClientManagement() {
             <thead>
               <tr>
                 <th className="px-6 py-3 text-left">Name</th>
-                <th className="px-6 py-3 text-left">Contact</th>
+                <th className="px-6 py-3 text-left">Contact Info</th>
                 <th className="px-6 py-3 text-left">Type</th>
                 <th className="px-6 py-3 text-left">Status</th>
+                <th className="px-6 py-3 text-left">TJ</th>
                 <th className="px-6 py-3 text-left">Actions</th>
               </tr>
             </thead>
@@ -434,9 +450,18 @@ function ClientManagement() {
                 >
                   <td className="px-6 py-4">{client.name}</td>
                   <td className="px-6 py-4">
-                    <div>{client.contact_person}</div>
-                    <div className="text-sm text-gray-500">{client.email}</div>
-                    <div className="text-sm text-gray-500">{client.phone}</div>
+                    {client.email && (
+                      <div className="flex items-center gap-2">
+                        <Mail className="h-4 w-4" />
+                        <span>{client.email}</span>
+                      </div>
+                    )}
+                    {client.phone && (
+                      <div className="flex items-center gap-2">
+                        <Phone className="h-4 w-4" />
+                        <span>{client.phone}</span>
+                      </div>
+                    )}
                   </td>
                   <td className="px-6 py-4">
                     <span className="capitalize">{client.client_types?.name}</span>
@@ -448,6 +473,15 @@ function ClientManagement() {
                         : 'bg-red-100 text-red-800'
                     }`}>
                       {client.status}
+                    </span>
+                  </td>
+                  <td className="px-6 py-4">
+                    <span className={`px-2 py-1 rounded text-sm ${
+                      client.is_tj
+                        ? 'bg-blue-100 text-blue-800'
+                        : 'bg-gray-100 text-gray-800'
+                    }`}>
+                      {client.is_tj ? 'Yes' : 'No'}
                     </span>
                   </td>
                   <td className="px-6 py-4">

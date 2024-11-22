@@ -101,6 +101,13 @@ export default function SaleFormModal({
     }
   }, [formData.clientId])
 
+  // Fetch product prices when sale date changes
+  useEffect(() => {
+    if (formData.saleDate) {
+      fetchProductPrices(formData.saleDate)
+    }
+  }, [formData.saleDate])
+
   const fetchSpecialPrices = async (clientId) => {
     if (!clientId) return
     const { data, error } = await supabase
@@ -119,6 +126,43 @@ export default function SaleFormModal({
     }
   }
 
+  const fetchProductPrices = async (saleDate) => {
+    const promises = products.map(async (product) => {
+      const { data, error } = await supabase.rpc('get_product_price_at_date', {
+        product_id: product.id,
+        target_date: saleDate
+      })
+
+      if (error) {
+        console.error('Error fetching product price:', error)
+        return null
+      }
+
+      return {
+        productId: product.id,
+        price: data
+      }
+    })
+
+    const prices = await Promise.all(promises)
+    const priceMap = {}
+    prices.forEach(price => {
+      if (price) {
+        priceMap[price.productId] = price.price
+      }
+    })
+
+    // Update unit prices for existing items
+    setFormData(prev => ({
+      ...prev,
+      items: prev.items.map(item => ({
+        ...item,
+        unitPrice: specialPrices[item.productId] || priceMap[item.productId] || 0,
+        totalPrice: item.quantity * (specialPrices[item.productId] || priceMap[item.productId] || 0)
+      }))
+    }))
+  }
+
   const addItem = () => {
     setFormData(prev => ({
       ...prev,
@@ -129,6 +173,28 @@ export default function SaleFormModal({
         totalPrice: 0,
         discountPercentage: 0
       }]
+    }))
+  }
+
+  const handleAddItem = (productId) => {
+    const product = products.find(p => p.id === productId)
+    if (!product) return
+
+    // Get the current price based on special prices or historical prices
+    const unitPrice = specialPrices[productId] || product.default_price || 0
+
+    setFormData(prev => ({
+      ...prev,
+      items: [
+        ...prev.items,
+        {
+          productId,
+          quantity: 1,
+          unitPrice,
+          totalPrice: unitPrice,
+          discountPercentage: 0
+        }
+      ]
     }))
   }
 
@@ -159,8 +225,8 @@ export default function SaleFormModal({
       // If product changed, update unit price and total price
       if (updates.productId) {
         const specialPrice = specialPrices[updates.productId]
-        newItems[index].unitPrice = specialPrice || 
-          products.find(p => p.id === updates.productId)?.default_price || 0
+        const productPrice = products.find(p => p.id === updates.productId)?.default_price || 0
+        newItems[index].unitPrice = specialPrice || productPrice
         newItems[index].totalPrice = newItems[index].quantity * newItems[index].unitPrice
       }
 

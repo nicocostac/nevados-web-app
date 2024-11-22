@@ -15,6 +15,7 @@ export default function ProductFormModal({
     name: '',
     description: '',
     default_price: '',
+    price_start_date: new Date().toISOString().split('T')[0], // Today's date as default
     unit_of_sale: 'unit',
     category_id: '',
     status: 'active'
@@ -28,6 +29,7 @@ export default function ProductFormModal({
         name: editingProduct.name || '',
         description: editingProduct.description || '',
         default_price: editingProduct.default_price?.toString() || '',
+        price_start_date: editingProduct.price_start_date || new Date().toISOString().split('T')[0],
         unit_of_sale: editingProduct.unit_of_sale || 'unit',
         category_id: editingProduct.category_id || '',
         status: editingProduct.status || 'active'
@@ -37,6 +39,7 @@ export default function ProductFormModal({
         name: '',
         description: '',
         default_price: '',
+        price_start_date: new Date().toISOString().split('T')[0],
         unit_of_sale: 'unit',
         category_id: categories[0]?.id || '', // Set first category as default if exists
         status: 'active'
@@ -52,14 +55,22 @@ export default function ProductFormModal({
     setError(null)
 
     try {
+      // Validate price
+      if (formData.default_price && isNaN(parseFloat(formData.default_price))) {
+        throw new Error('Price must be a valid number')
+      }
+
       // Convert default_price to number before submitting
       const submissionData = {
         ...formData,
-        default_price: parseFloat(formData.default_price)
+        default_price: formData.default_price ? parseFloat(formData.default_price) : 0
       }
+      
+      console.log('Submitting form data:', submissionData)
       await onSubmit(submissionData)
       onClose()
     } catch (error) {
+      console.error('Form submission error:', error)
       setError(error.message)
     } finally {
       setIsLoading(false)
@@ -102,30 +113,39 @@ export default function ProductFormModal({
           />
 
           <div className="grid grid-cols-2 gap-4">
-            <Input
-              type="number"
-              name="default_price"
-              placeholder="Default Price"
-              value={formData.default_price}
-              onChange={(e) => setFormData(prev => ({ ...prev, default_price: e.target.value }))}
-              required
-              step="0.01"
-              min="0"
-            />
-
-            <select
-              name="unit_of_sale"
-              value={formData.unit_of_sale}
-              onChange={(e) => setFormData(prev => ({ ...prev, unit_of_sale: e.target.value }))}
-              className="w-full p-2 border rounded"
-              required
-            >
-              <option value="unit">Unit</option>
-              <option value="box">Box</option>
-              <option value="pack">Pack</option>
-              <option value="liter">Liter</option>
-            </select>
+            <div>
+              <Input
+                type="number"
+                name="default_price"
+                placeholder="Price"
+                value={formData.default_price}
+                onChange={(e) => setFormData(prev => ({ ...prev, default_price: e.target.value }))}
+                required
+              />
+            </div>
+            <div>
+              <Input
+                type="date"
+                name="price_start_date"
+                value={formData.price_start_date}
+                onChange={(e) => setFormData(prev => ({ ...prev, price_start_date: e.target.value }))}
+                required
+              />
+            </div>
           </div>
+
+          <select
+            name="unit_of_sale"
+            value={formData.unit_of_sale}
+            onChange={(e) => setFormData(prev => ({ ...prev, unit_of_sale: e.target.value }))}
+            className="w-full p-2 border rounded"
+            required
+          >
+            <option value="unit">Unit</option>
+            <option value="box">Box</option>
+            <option value="pack">Pack</option>
+            <option value="liter">Liter</option>
+          </select>
 
           <select
             name="category_id"

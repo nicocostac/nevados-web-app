@@ -16,6 +16,7 @@ export default function AddressFormModal({
     borough_id: '',
     neighborhood_id: '',
     additional_info: '',
+    contact_person: '',
     is_default: false
   })
   const [error, setError] = useState(null)
@@ -44,6 +45,7 @@ export default function AddressFormModal({
         borough_id: editingAddress.borough_id || '',
         neighborhood_id: editingAddress.neighborhood_id || '',
         additional_info: editingAddress.additional_info || '',
+        contact_person: editingAddress.contact_person || '',
         is_default: editingAddress.is_default || false
       })
       if (editingAddress.borough_id) {
@@ -55,6 +57,7 @@ export default function AddressFormModal({
         borough_id: '',
         neighborhood_id: '',
         additional_info: '',
+        contact_person: '',
         is_default: false
       })
     }
@@ -102,18 +105,14 @@ export default function AddressFormModal({
       return
     }
 
-    if (!formData.neighborhood_id) {
-      setError('Please select a neighborhood')
-      return
-    }
-
     try {
       // Only send the IDs and other necessary data
       const addressData = {
         street_address: formData.street_address,
         borough_id: formData.borough_id,
-        neighborhood_id: formData.neighborhood_id,
+        neighborhood_id: formData.neighborhood_id || null,
         additional_info: formData.additional_info,
+        contact_person: formData.contact_person,
         is_default: formData.is_default
       }
 
@@ -154,6 +153,16 @@ export default function AddressFormModal({
           </div>
 
           <div>
+            <label className="block mb-2">Contact Person</label>
+            <Input
+              type="text"
+              value={formData.contact_person}
+              onChange={(e) => setFormData({ ...formData, contact_person: e.target.value })}
+              required
+            />
+          </div>
+
+          <div>
             <label className="block mb-2">Borough</label>
             <select
               value={formData.borough_id}
@@ -176,7 +185,6 @@ export default function AddressFormModal({
               value={formData.neighborhood_id}
               onChange={(e) => setFormData({ ...formData, neighborhood_id: e.target.value })}
               className="w-full p-2 border rounded"
-              required
               disabled={!formData.borough_id}
             >
               <option value="">Select Neighborhood</option>

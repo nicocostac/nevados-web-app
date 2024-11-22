@@ -364,6 +364,105 @@ Administrators and Salespersons
 - Accurate billing
 - Reduced cancellations
 
+
+
+### 11. Heatmap for Delivery Addresses
+
+#### Objective
+Visualize delivery zones as a heatmap to identify areas with high customer density and focus marketing strategies in those sectors.
+
+#### Key Features
+1. **Automatic Conversion of Addresses to Coordinates**:
+   - Use a geocoding service to transform addresses into coordinates (latitude and longitude)
+   - Store coordinates in the database for future analysis and visualizations
+
+2. **Dynamic Heatmap Generation**:
+   - Real-time visualization of delivery areas on an interactive map
+   - Options to filter data by date, delivered products, or number of orders
+
+3. **Integration with Existing Application**:
+   - A dedicated module in the dashboard to access the heatmap
+   - Leverage the current stack (**Next.js**, **Supabase**, **Tailwind CSS**) for seamless integration
+
+#### Implementation Details
+
+##### API Endpoint for Coordinates
+```javascript
+// pages/api/heatmap-data.js
+import { supabase } from '@/lib/supabaseClient';
+
+export default async function handler(req, res) {
+  const { data, error } = await supabase.from('addresses').select('lat, lng');
+  if (error) return res.status(500).json({ error: error.message });
+
+  res.status(200).json(data);
+}
+```
+
+##### Geocoding Implementation
+```javascript
+async function geocodeAddress(address) {
+  const API_KEY = process.env.GOOGLE_MAPS_API_KEY;
+  const url = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(address)}&key=${API_KEY}`;
+  const response = await fetch(url);
+  const data = await response.json();
+
+  if (data.results.length > 0) {
+    const { lat, lng } = data.results[0].geometry.location;
+    return { lat, lng };
+  }
+  throw new Error('Geocoding failed');
+}
+```
+
+##### Frontend Component
+```javascript
+import { useEffect } from 'react';
+import L from 'leaflet';
+import 'leaflet.heat';
+
+const Heatmap = () => {
+  useEffect(() => {
+    const map = L.map('map').setView([-12.0464, -77.0428], 13);
+
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '&copy; OpenStreetMap contributors',
+    }).addTo(map);
+
+    fetch('/api/heatmap-data')
+      .then((res) => res.json())
+      .then((data) => {
+        const heatData = data.map((point) => [point.lat, point.lng]);
+        L.heatLayer(heatData, { radius: 25 }).addTo(map);
+      });
+  }, []);
+
+  return <div id="map" style={{ height: '500px' }}></div>;
+};
+
+export default Heatmap;
+```
+
+#### Workflow Integration
+1. **Automatic Process**:
+   - When a new address is added:
+     - The geocoding script runs automatically
+     - Coordinates are stored in the database
+     - Data is dynamically updated in the heatmap
+
+2. **Required APIs and Libraries**:
+   - **Geocoding**: Google Maps Geocoding API
+   - **Maps**: Leaflet.js and Leaflet.heat
+
+#### Users Involved
+Administrators
+
+#### Success Metrics
+- Identification of new marketing areas
+- Improved efficiency of marketing campaigns
+- Optimized delivery routes through geographic analysis
+
+
 ## Technical Documentation
 
 ### 1. Initial Project Setup

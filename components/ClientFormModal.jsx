@@ -20,13 +20,13 @@ export default function ClientFormModal({
   const { user: currentUser } = useAuth()
   const [formData, setFormData] = useState({
     name: '',
-    contact_person: '',
     email: '',
     phone: '',
     notes: '',
     type_id: '',
     communication_preference: 'email',
-    status: 'active'
+    status: 'active',
+    is_tj: false
   })
   const [addresses, setAddresses] = useState([])
   const [isAddressModalOpen, setIsAddressModalOpen] = useState(false)
@@ -42,13 +42,13 @@ export default function ClientFormModal({
     if (editingClient) {
       setFormData({
         name: editingClient.name || '',
-        contact_person: editingClient.contact_person || '',
         email: editingClient.email || '',
         phone: editingClient.phone || '',
         notes: editingClient.notes || '',
         type_id: editingClient.type_id || '',
         communication_preference: editingClient.communication_preference || 'email',
-        status: editingClient.status || 'active'
+        status: editingClient.status || 'active',
+        is_tj: editingClient.is_tj || false
       })
 
       // Fetch addresses if editing a client
@@ -60,13 +60,13 @@ export default function ClientFormModal({
     } else {
       setFormData({
         name: '',
-        contact_person: '',
         email: '',
         phone: '',
         notes: '',
         type_id: clientTypes[0]?.id || '',
         communication_preference: 'email',
-        status: 'active'
+        status: 'active',
+        is_tj: false
       })
       setAddresses([])
       setSpecialPrices([])
@@ -79,8 +79,8 @@ export default function ClientFormModal({
       .from('client_addresses')
       .select(`
         *,
-        boroughs:boroughs!inner(name),
-        neighborhoods:neighborhoods!inner(name)
+        boroughs:boroughs(name),
+        neighborhoods:neighborhoods(name)
       `)
       .eq('client_id', clientId)
       .order('is_default', { ascending: false })
@@ -239,7 +239,16 @@ export default function ClientFormModal({
         // Update existing client
         const { error } = await supabase
           .from('clients')
-          .update(formData)
+          .update({
+            name: formData.name,
+            email: formData.email,
+            phone: formData.phone,
+            notes: formData.notes,
+            type_id: formData.type_id,
+            communication_preference: formData.communication_preference,
+            status: formData.status,
+            is_tj: formData.is_tj
+          })
           .eq('id', editingClient.id)
 
         if (error) throw error
@@ -248,10 +257,19 @@ export default function ClientFormModal({
         // Create new client
         const { data, error } = await supabase
           .from('clients')
-          .insert([{
-            ...formData,
-            created_by: currentUser.id
-          }])
+          .insert([
+            {
+              name: formData.name,
+              email: formData.email,
+              phone: formData.phone,
+              notes: formData.notes,
+              type_id: formData.type_id,
+              communication_preference: formData.communication_preference,
+              status: formData.status,
+              is_tj: formData.is_tj,
+              created_by: currentUser.id
+            }
+          ])
           .select()
 
         if (error) throw error
@@ -289,13 +307,13 @@ export default function ClientFormModal({
       // Reset all form data
       setFormData({
         name: '',
-        contact_person: '',
         email: '',
         phone: '',
         notes: '',
         type_id: clientTypes[0]?.id || '',
         communication_preference: 'email',
-        status: 'active'
+        status: 'active',
+        is_tj: false
       })
       setAddresses([])
       setTempSpecialPrices([])
@@ -357,13 +375,6 @@ export default function ClientFormModal({
               required
             />
 
-            <Input
-              name="contact_person"
-              placeholder="Contact Person"
-              value={formData.contact_person}
-              onChange={(e) => setFormData(prev => ({ ...prev, contact_person: e.target.value }))}
-            />
-
             <div className="grid grid-cols-2 gap-4">
               <Input
                 type="email"
@@ -416,7 +427,8 @@ export default function ClientFormModal({
                         )}
                       </div>
                       <div className="text-sm text-gray-500">
-                        {address.boroughs?.name}, {address.neighborhoods?.name}
+                        {address.boroughs?.name}
+                        {address.neighborhoods?.name && `, ${address.neighborhoods.name}`}
                       </div>
                       {address.additional_info && (
                         <div className="text-sm text-gray-500">{address.additional_info}</div>
@@ -463,7 +475,8 @@ export default function ClientFormModal({
                         )}
                       </div>
                       <div className="text-sm text-gray-500">
-                        {address.boroughs?.name}, {address.neighborhoods?.name}
+                        {address.boroughs?.name}
+                        {address.neighborhoods?.name && `, ${address.neighborhoods.name}`}
                       </div>
                       {address.additional_info && (
                         <div className="text-sm text-gray-500">{address.additional_info}</div>
@@ -647,6 +660,19 @@ export default function ClientFormModal({
               <option value="active">Active</option>
               <option value="inactive">Inactive</option>
             </select>
+
+            <div className="flex items-center space-x-2">
+              <input
+                type="checkbox"
+                id="is_tj"
+                checked={formData.is_tj}
+                onChange={(e) => setFormData({ ...formData, is_tj: e.target.checked })}
+                className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+              />
+              <label htmlFor="is_tj" className="text-sm font-medium text-gray-700">
+                Is TJ
+              </label>
+            </div>
           </div>
 
           <div className="flex gap-2">
