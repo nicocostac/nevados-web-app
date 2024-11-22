@@ -77,6 +77,11 @@ export default function Sidebar() {
           title: 'Delivery Heatmap',
           href: '/heatmap',
           roles: ['admin', 'manager']
+        },
+        {
+          title: 'Sales & Delivery Reports',
+          href: '/reports',
+          roles: ['admin', 'manager']
         }
       ]
     },
