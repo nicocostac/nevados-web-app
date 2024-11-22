@@ -3,10 +3,9 @@ import { requireAuth } from '@/lib/auth/requireAuth'
 import { supabase } from '@/lib/supabaseClient'
 import { Button } from '@/components/ui/button'
 import { Alert } from '@/components/ui/alert'
-import { Edit2, Trash2, Plus, History } from 'lucide-react'
+import { Edit2, Trash2, Plus } from 'lucide-react'
 import { useAuth } from '@/lib/context/AuthContext'
 import ProductFormModal from '@/components/ProductFormModal'
-import PriceHistoryModal from '@/components/PriceHistoryModal'
 import { formatCurrency } from '@/lib/utils/format'
 
 function ProductManagement() {
@@ -15,14 +14,23 @@ function ProductManagement() {
   const [categories, setCategories] = useState([])
   const [userRole, setUserRole] = useState(null)
   const [isModalOpen, setIsModalOpen] = useState(false)
-  const [isPriceHistoryModalOpen, setIsPriceHistoryModalOpen] = useState(false)
   const [editingProduct, setEditingProduct] = useState(null)
   const [message, setMessage] = useState(null)
 
   // Helper function to format dates consistently
   const formatDate = (dateString) => {
     const date = new Date(dateString)
-    return date.toLocaleDateString('en-GB', { timeZone: 'UTC' })
+    return date.toLocaleDateString('es-CL', { timeZone: 'UTC' })
+  }
+
+  // Helper function to get the next future price
+  const getNextFuturePrice = (futurePrices) => {
+    if (!futurePrices || futurePrices.length === 0) return null;
+    
+    // Sort future prices by start date and get the closest one
+    return futurePrices.sort((a, b) => 
+      new Date(a.start_date) - new Date(b.start_date)
+    )[0];
   }
 
   const fetchProducts = async () => {
@@ -71,7 +79,8 @@ function ProductManagement() {
 
         return {
           ...product,
-          default_price: currentPrice ? currentPrice.price : null,
+          currentPrice: currentPrice ? currentPrice.price : 0,
+          currentPriceId: currentPrice ? currentPrice.id : null,
           price_start_date: currentPrice ? currentPrice.start_date : null,
           futurePrices,
           historicalPrices
@@ -119,6 +128,16 @@ function ProductManagement() {
     fetchData()
   }, [currentUser?.id])
 
+  // Add event listener for product updates
+  useEffect(() => {
+    const handleProductsUpdate = () => {
+      fetchProducts();
+    };
+
+    window.addEventListener('productsUpdated', handleProductsUpdate);
+    return () => window.removeEventListener('productsUpdated', handleProductsUpdate);
+  }, []);
+
   // Show loading state while role is being fetched
   if (!userRole) {
     return <div className="p-4 text-center">Loading...</div>
@@ -135,6 +154,8 @@ function ProductManagement() {
     )
   }
 
+  const isAdmin = userRole === 'admin';
+
   const handleSubmit = async (formData) => {
     try {
       console.log('Handling form submission:', formData)
@@ -145,28 +166,66 @@ function ProductManagement() {
           .from('products')
           .update({
             name: formData.name,
+            description: formData.description,
             category_id: formData.category_id,
             unit_of_sale: formData.unit_of_sale,
-            status: formData.status,
-            default_price: 0  // Set to 0 since we're using product_prices table
+            status: formData.status
           })
           .eq('id', editingProduct.id)
 
         if (error) throw error
 
-        // Update price if provided
-        console.log('Updating price for existing product:', formData.default_price)
-        const { error: priceError } = await supabase
-          .rpc('update_product_price', {
-            p_product_id: editingProduct.id,
-            new_price: parseInt(formData.default_price || 0, 10),
-            price_start_date: formData.price_start_date || new Date().toISOString().split('T')[0],
-            user_id: currentUser.id
-          })
+        // Update prices if user is admin
+        if (isAdmin) {
+          // Process each price in the form
+          for (const price of formData.prices) {
+            if (price.id) {
+              // Update existing price if changed
+              const { error } = await supabase
+                .from('product_prices')
+                .update({
+                  price: parseFloat(price.price),
+                  start_date: price.start_date,
+                  end_date: price.end_date,
+                  updated_by: currentUser.id
+                })
+                .eq('id', price.id)
 
-        if (priceError) {
-          console.error('Price update error:', priceError)
-          throw priceError
+              if (error) throw error
+            } else {
+              // Check for overlapping dates
+              const { data: overlappingPrices, error: overlapError } = await supabase
+                .from('product_prices')
+                .select('id')
+                .eq('product_id', editingProduct.id)
+                .or(`start_date.lte.${price.end_date || '9999-12-31'},and(end_date.gte.${price.start_date},end_date.is.null)`)
+
+              if (overlapError) throw overlapError
+
+              // Delete overlapping prices
+              if (overlappingPrices.length > 0) {
+                const { error: deleteError } = await supabase
+                  .from('product_prices')
+                  .delete()
+                  .in('id', overlappingPrices.map(p => p.id))
+
+                if (deleteError) throw deleteError
+              }
+
+              // Insert new price
+              const { error } = await supabase
+                .from('product_prices')
+                .insert({
+                  product_id: editingProduct.id,
+                  price: parseFloat(price.price),
+                  start_date: price.start_date,
+                  end_date: price.end_date,
+                  created_by: currentUser.id
+                })
+
+              if (error) throw error
+            }
+          }
         }
 
         setMessage('Product updated successfully')
@@ -176,42 +235,40 @@ function ProductManagement() {
           .from('products')
           .insert({
             name: formData.name,
+            description: formData.description,
             category_id: formData.category_id,
             unit_of_sale: formData.unit_of_sale,
-            status: formData.status,
-            default_price: 0  // Set to 0 since we're using product_prices table
+            status: formData.status
           })
           .select()
           .single()
 
         if (error) throw error
 
-        // Create initial price record
-        console.log('Creating initial price for new product:', formData.default_price)
-        const { error: priceError } = await supabase
-          .rpc('update_product_price', {
-            p_product_id: newProduct.id,
-            new_price: parseInt(formData.default_price || 0, 10),
-            price_start_date: formData.price_start_date || new Date().toISOString().split('T')[0],
-            user_id: currentUser.id
-          })
+        // Insert initial price
+        if (formData.prices.length > 0) {
+          const initialPrice = formData.prices[0]
+          const { error: priceError } = await supabase
+            .from('product_prices')
+            .insert({
+              product_id: newProduct.id,
+              price: parseFloat(initialPrice.price),
+              start_date: initialPrice.start_date,
+              end_date: initialPrice.end_date,
+              created_by: currentUser.id
+            })
 
-        if (priceError) {
-          console.error('Price creation error:', priceError)
-          throw priceError
+          if (priceError) throw priceError
         }
 
         setMessage('Product created successfully')
       }
 
-      // Refresh the products list
       await fetchProducts()
-
-      // Close modal and reset editing state
       setIsModalOpen(false)
       setEditingProduct(null)
     } catch (error) {
-      console.error('Error saving product:', error)
+      console.error('Error handling form submission:', error)
       setMessage(error.message)
     }
   }
@@ -273,32 +330,39 @@ function ProductManagement() {
                   <td className="px-6 py-4">{product.product_categories?.name}</td>
                   <td className="px-6 py-4">
                     <div className="flex flex-col">
-                      {product.default_price ? (
+                      {product.currentPrice ? (
                         <>
-                          <span>{formatCurrency(product.default_price)}</span>
-                          <span className="text-sm text-gray-500">
-                            since {formatDate(product.price_start_date)}
-                          </span>
+                          <div>
+                            <span className="font-medium">{formatCurrency(product.currentPrice)}</span>
+                            <span className="text-sm text-gray-500 ml-2">
+                              (desde {formatDate(product.price_start_date)})
+                            </span>
+                          </div>
+                          {product.futurePrices && product.futurePrices.length > 0 && (
+                            <div className="text-sm mt-1">
+                              {(() => {
+                                const nextPrice = getNextFuturePrice(product.futurePrices);
+                                if (nextPrice) {
+                                  return (
+                                    <span className="text-blue-600">
+                                      Próximo precio: {formatCurrency(nextPrice.price)} 
+                                      <span className="text-gray-500"> (desde {formatDate(nextPrice.start_date)})</span>
+                                    </span>
+                                  );
+                                }
+                              })()}
+                            </div>
+                          )}
                         </>
                       ) : (
-                        <span className="text-gray-500">No current price</span>
-                      )}
-                      {product.futurePrices.length > 0 && (
-                        <div className="mt-1 text-sm text-blue-600">
-                          Next: {formatCurrency(product.futurePrices[0].price)}
-                          <span className="text-gray-500 ml-1">
-                            (from {formatDate(product.futurePrices[0].start_date)})
-                          </span>
-                        </div>
+                        <span className="text-gray-500">Sin precio definido</span>
                       )}
                     </div>
                   </td>
                   <td className="px-6 py-4">{product.unit_of_sale}</td>
                   <td className="px-6 py-4">
                     <span className={`px-2 py-1 rounded text-sm ${
-                      product.status === 'active' 
-                        ? 'bg-green-100 text-green-800' 
-                        : 'bg-red-100 text-red-800'
+                      product.status === 'active' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
                     }`}>
                       {product.status}
                     </span>
@@ -306,8 +370,8 @@ function ProductManagement() {
                   <td className="px-6 py-4">
                     <div className="flex gap-2">
                       <Button
-                        variant="ghost"
-                        size="sm"
+                        variant="outline"
+                        size="icon"
                         onClick={() => {
                           setEditingProduct(product)
                           setIsModalOpen(true)
@@ -316,21 +380,11 @@ function ProductManagement() {
                         <Edit2 className="h-4 w-4" />
                       </Button>
                       <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => {
-                          setEditingProduct(product)
-                          setIsPriceHistoryModalOpen(true)
-                        }}
-                      >
-                        <History className="h-4 w-4" />
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="sm"
+                        variant="outline"
+                        size="icon"
                         onClick={() => handleDelete(product.id)}
                       >
-                        <Trash2 className="h-4 w-4 text-red-500" />
+                        <Trash2 className="h-4 w-4" />
                       </Button>
                     </div>
                   </td>
@@ -351,48 +405,6 @@ function ProductManagement() {
         editingProduct={editingProduct}
         categories={categories}
       />
-
-      {isPriceHistoryModalOpen && editingProduct && (
-        <PriceHistoryModal
-          isOpen={isPriceHistoryModalOpen}
-          onClose={() => setIsPriceHistoryModalOpen(false)}
-          product={editingProduct}
-          onSave={async (updatedPrices) => {
-            try {
-              // Handle each price update
-              for (const price of updatedPrices) {
-                if (price.id) {
-                  // Update existing price
-                  const { error } = await supabase
-                    .from('product_prices')
-                    .update({
-                      price: price.price,
-                      start_date: price.start_date,
-                      end_date: price.end_date,
-                      updated_by: currentUser.id
-                    })
-                    .eq('id', price.id)
-
-                  if (error) throw error
-                }
-              }
-
-              // Refresh products list
-              await fetchProducts()
-
-              setMessage('Price history updated successfully')
-              setIsPriceHistoryModalOpen(false)
-              setEditingProduct(null)
-            } catch (error) {
-              console.error('Error updating price history:', error)
-              setMessage(error.message)
-            }
-          }}
-          onSubmit={fetchProducts}
-          setError={setMessage}
-          supabase={supabase}
-        />
-      )}
     </div>
   )
 }

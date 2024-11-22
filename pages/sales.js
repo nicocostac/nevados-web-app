@@ -159,13 +159,42 @@ function SalesManagement() {
   const fetchProducts = async () => {
     const { data, error } = await supabase
       .from('products')
-      .select('id, name, default_price')
+      .select(`
+        id,
+        name,
+        unit_of_sale,
+        status,
+        product_prices (
+          id,
+          price,
+          start_date,
+          end_date
+        )
+      `)
       .eq('status', 'active')
+      .order('name');
 
     if (error) {
       console.error('Error fetching products:', error)
     } else {
-      setProducts(data || [])
+      // Process products to include current price
+      const currentDate = new Date();
+      const processedProducts = data.map(product => {
+        const currentPrice = product.product_prices
+          .sort((a, b) => new Date(b.start_date) - new Date(a.start_date))
+          .find(price => {
+            const startDate = new Date(price.start_date);
+            const endDate = price.end_date ? new Date(price.end_date) : null;
+            return startDate <= currentDate && (!endDate || endDate >= currentDate);
+          });
+
+        return {
+          ...product,
+          default_price: currentPrice?.price || 0
+        };
+      });
+
+      setProducts(processedProducts || [])
     }
   }
 

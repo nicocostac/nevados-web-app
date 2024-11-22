@@ -17,11 +17,12 @@ export default function ClientPriceFormModal({
     product_id: '',
     discount_percentage: '',
     final_price: '',
-    valid_from: new Date().toISOString().split('T')[0],
-    valid_until: '',
+    start_date: new Date().toISOString().split('T')[0],
+    end_date: '',
     notes: ''
   })
   const [selectedProduct, setSelectedProduct] = useState(null)
+  const [currentPrice, setCurrentPrice] = useState(null)
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState(null)
 
@@ -31,50 +32,75 @@ export default function ClientPriceFormModal({
         product_id: editingPrice.product_id || '',
         discount_percentage: editingPrice.discount_percentage?.toString() || '',
         final_price: editingPrice.final_price?.toString() || '',
-        valid_from: editingPrice.valid_from || new Date().toISOString().split('T')[0],
-        valid_until: editingPrice.valid_until || '',
+        start_date: editingPrice.start_date || new Date().toISOString().split('T')[0],
+        end_date: editingPrice.end_date || '',
         notes: editingPrice.notes || ''
       })
       const product = products.find(p => p.id === editingPrice.product_id)
       setSelectedProduct(product)
+      if (product) {
+        fetchCurrentPrice(product.id)
+      }
     } else {
       setFormData({
         product_id: '',
         discount_percentage: '',
         final_price: '',
-        valid_from: new Date().toISOString().split('T')[0],
-        valid_until: '',
+        start_date: new Date().toISOString().split('T')[0],
+        end_date: '',
         notes: ''
       })
       setSelectedProduct(null)
+      setCurrentPrice(null)
     }
   }, [editingPrice, products])
 
-  const handleProductChange = (productId) => {
+  const fetchCurrentPrice = async (productId) => {
+    const today = new Date().toISOString().split('T')[0]
+    const { data, error } = await supabase.rpc('get_product_price_at_date', {
+      product_id: productId,
+      target_date: today
+    })
+    
+    if (error) {
+      console.error('Error fetching current price:', error)
+      return
+    }
+
+    if (data && data[0]) {
+      setCurrentPrice(data[0].price)
+    }
+  }
+
+  const handleProductChange = async (productId) => {
     const product = products.find(p => p.id === productId)
     setSelectedProduct(product)
     setFormData(prev => ({
       ...prev,
       product_id: productId,
-      final_price: product?.default_price?.toString() || '',
+      final_price: '',
       discount_percentage: ''
     }))
+    
+    if (product) {
+      await fetchCurrentPrice(productId)
+    }
   }
 
   const handleDiscountChange = (percentage) => {
-    if (!selectedProduct) return
+    if (!selectedProduct || !currentPrice) return
 
     const discount = parseFloat(percentage)
     if (isNaN(discount)) {
       setFormData(prev => ({
         ...prev,
         discount_percentage: percentage,
-        final_price: selectedProduct.default_price.toString()
+        final_price: currentPrice.toString()
       }))
       return
     }
 
-    const finalPrice = selectedProduct.default_price * (1 - discount / 100)
+    const finalPrice = currentPrice * (1 - discount / 100)
     setFormData(prev => ({
       ...prev,
       discount_percentage: percentage,
@@ -83,7 +109,7 @@ export default function ClientPriceFormModal({
   }
 
   const handlePriceChange = (price) => {
-    if (!selectedProduct) return
+    if (!selectedProduct || !currentPrice) return
 
     const finalPrice = parseFloat(price)
     if (isNaN(finalPrice)) {
@@ -95,7 +121,7 @@ export default function ClientPriceFormModal({
       return
     }
 
-    const discount = ((selectedProduct.default_price - finalPrice) / selectedProduct.default_price) * 100
+    const discount = ((currentPrice - finalPrice) / currentPrice) * 100
     setFormData(prev => ({
       ...prev,
       final_price: price,
@@ -115,7 +141,7 @@ export default function ClientPriceFormModal({
         ...formData,
         discount_percentage: parseFloat(formData.discount_percentage),
         final_price: parseFloat(formData.final_price),
-        valid_until: formData.valid_until || null
+        end_date: formData.end_date || null
       }
       await onSubmit(submissionData)
       onClose()
@@ -155,7 +181,7 @@ export default function ClientPriceFormModal({
             <option value="">Select Product</option>
             {products.map(product => (
               <option key={product.id} value={product.id}>
-                {product.name} (Default: ${product.default_price})
+                {product.name} {currentPrice && selectedProduct?.id === product.id ? `(Current: ${formatCurrency(currentPrice)})` : ''}
               </option>
             ))}
           </select>
@@ -197,26 +223,25 @@ export default function ClientPriceFormModal({
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Valid From
+                    Start Date
                   </label>
                   <Input
                     type="date"
-                    name="valid_from"
-                    value={formData.valid_from}
-                    onChange={(e) => setFormData(prev => ({ ...prev, valid_from: e.target.value }))}
+                    name="start_date"
+                    value={formData.start_date}
+                    onChange={(e) => setFormData(prev => ({ ...prev, start_date: e.target.value }))}
                     required
                   />
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Valid Until
+                    End Date
                   </label>
                   <Input
                     type="date"
-                    name="valid_until"
-                    value={formData.valid_until}
-                    onChange={(e) => setFormData(prev => ({ ...prev, valid_until: e.target.value }))}
-                    min={formData.valid_from}
+                    name="end_date"
+                    value={formData.end_date}
+                    onChange={(e) => setFormData(prev => ({ ...prev, end_date: e.target.value }))}
                   />
                 </div>
               </div>

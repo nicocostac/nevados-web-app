@@ -37,6 +37,7 @@ export default function ClientFormModal({
   const [editingPrice, setEditingPrice] = useState(null)
   const [specialPrices, setSpecialPrices] = useState([])
   const [tempSpecialPrices, setTempSpecialPrices] = useState([])
+  const [currentPrices, setCurrentPrices] = useState({})
 
   useEffect(() => {
     if (editingClient) {
@@ -74,6 +75,39 @@ export default function ClientFormModal({
     }
   }, [editingClient, clientTypes])
 
+  useEffect(() => {
+    // Fetch current prices for all products
+    const fetchCurrentPrices = async () => {
+      const today = new Date().toISOString().split('T')[0]
+      const promises = products.map(async (product) => {
+        const { data, error } = await supabase.rpc('get_product_price_at_date', {
+          product_id: product.id,
+          target_date: today
+        })
+        
+        if (error) {
+          console.error('Error fetching current price:', error)
+          return
+        }
+
+        if (data && data[0]) {
+          return { productId: product.id, price: data[0].price }
+        }
+      })
+
+      const results = await Promise.all(promises)
+      const pricesMap = {}
+      results.forEach(result => {
+        if (result) {
+          pricesMap[result.productId] = result.price
+        }
+      })
+      setCurrentPrices(pricesMap)
+    }
+
+    fetchCurrentPrices()
+  }, [products])
+
   const fetchAddresses = async (clientId) => {
     const { data, error } = await supabase
       .from('client_addresses')
@@ -91,6 +125,59 @@ export default function ClientFormModal({
       setAddresses(data || [])
     }
   }
+
+  const fetchSpecialPrices = async (clientId) => {
+    try {
+      // First, get the client prices with basic product info
+      const { data: clientPrices, error: clientPricesError } = await supabase
+        .from('client_prices')
+        .select(`
+          *,
+          products (
+            id,
+            name
+          )
+        `)
+        .eq('client_id', clientId)
+        .order('created_at', { ascending: false });
+
+      if (clientPricesError) {
+        console.error('Error fetching special prices:', clientPricesError);
+        return;
+      }
+
+      // For each product in client prices, get its current regular price
+      const today = new Date().toISOString().split('T')[0];
+      const pricePromises = clientPrices.map(async (price) => {
+        const { data: priceData, error: priceError } = await supabase.rpc('get_product_price_at_date', {
+          product_id: price.product_id,
+          target_date: today,
+          client_id: null // Pass null to get regular price
+        });
+
+        if (priceError) {
+          console.error('Error fetching product price:', priceError);
+          return price;
+        }
+
+        // Calculate the final price based on the discount percentage
+        const regularPrice = priceData[0]?.price || 0;
+        const discountPercentage = price.discount_percentage || 0;
+        const finalPrice = regularPrice * (1 - discountPercentage / 100);
+
+        return {
+          ...price,
+          current_regular_price: regularPrice,
+          final_price: finalPrice
+        };
+      });
+
+      const pricesWithRegularPrices = await Promise.all(pricePromises);
+      setSpecialPrices(pricesWithRegularPrices);
+    } catch (error) {
+      console.error('Error in fetchSpecialPrices:', error);
+    }
+  };
 
   const handleAddressSubmit = async (addressData) => {
     try {
@@ -140,26 +227,6 @@ export default function ClientFormModal({
       console.error('Error deleting address:', error)
     } else {
       setAddresses(addresses.filter(a => a.id !== addressId))
-    }
-  }
-
-  const fetchSpecialPrices = async (clientId) => {
-    const { data, error } = await supabase
-      .from('client_prices')
-      .select(`
-        *,
-        product:products (
-          name,
-          default_price
-        )
-      `)
-      .eq('client_id', clientId)
-      .order('created_at', { ascending: false })
-
-    if (error) {
-      console.error('Error fetching special prices:', error)
-    } else {
-      setSpecialPrices(data || [])
     }
   }
 
@@ -525,14 +592,14 @@ export default function ClientFormModal({
                   className="flex items-start justify-between p-3 border rounded"
                 >
                   <div>
-                    <div className="font-medium">{price.product.name}</div>
+                    <div className="font-medium">{price.products.name}</div>
                     <div className="text-sm text-gray-500">
-                      Default: {formatCurrency(price.product.default_price)} | 
-                      Special: {formatCurrency(price.final_price)} ({price.discount_percentage}% off)
+                      <span>Valid from: {new Date(price.start_date).toLocaleDateString()}</span>
+                      <span className="ml-2">Valid until: {price.end_date ? new Date(price.end_date).toLocaleDateString() : 'No end date'}</span>
                     </div>
                     <div className="text-sm text-gray-500">
-                      Valid: {new Date(price.valid_from).toLocaleDateString()}
-                      {price.valid_until && ` to ${new Date(price.valid_until).toLocaleDateString()}`}
+                      Regular: {formatCurrency(price.current_regular_price || 0)} | 
+                      Special: {formatCurrency(price.final_price || 0)} ({(price.discount_percentage || 0).toFixed(1)}% off)
                     </div>
                     {price.notes && (
                       <div className="text-sm text-gray-500">{price.notes}</div>
@@ -573,12 +640,12 @@ export default function ClientFormModal({
                       {products.find(p => p.id === price.product_id)?.name}
                     </div>
                     <div className="text-sm text-gray-500">
-                      Default: {formatCurrency(products.find(p => p.id === price.product_id)?.default_price)} | 
-                      Special: {formatCurrency(price.final_price)} ({price.discount_percentage}% off)
+                      <span>Valid from: {new Date(price.start_date).toLocaleDateString()}</span>
+                      <span className="ml-2">Valid until: {price.end_date ? new Date(price.end_date).toLocaleDateString() : 'No end date'}</span>
                     </div>
                     <div className="text-sm text-gray-500">
-                      Valid: {new Date(price.valid_from).toLocaleDateString()}
-                      {price.valid_until && ` to ${new Date(price.valid_until).toLocaleDateString()}`}
+                      Current: {formatCurrency(currentPrices[price.product_id] || 0)} | 
+                      Special: {formatCurrency(price.price)} ({price.discount_percentage}% off)
                     </div>
                     {price.notes && (
                       <div className="text-sm text-gray-500">{price.notes}</div>

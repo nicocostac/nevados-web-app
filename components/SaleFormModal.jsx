@@ -9,9 +9,18 @@ import { formatCurrency } from '@/lib/utils/format'
 // Add this helper function at the top of the component, after the imports
 const formatDate = (dateString) => {
   const date = new Date(dateString)
-  date.setMinutes(date.getMinutes() + date.getTimezoneOffset())
-  return date.toISOString().split('T')[0]
+  // Ensure we're working with local date without time component
+  const localDate = new Date(date.getFullYear(), date.getMonth(), date.getDate())
+  return localDate.toISOString().split('T')[0]
 }
+
+const formatDateWithTimezone = (dateString) => {
+  const date = new Date(dateString);
+  // Add timezone offset to ensure correct date in UTC
+  const timezoneOffset = date.getTimezoneOffset() * 60000; // offset in milliseconds
+  const localDate = new Date(date.getTime() + timezoneOffset);
+  return localDate.toISOString().split('T')[0];
+};
 
 export default function SaleFormModal({ 
   isOpen, 
@@ -40,6 +49,7 @@ export default function SaleFormModal({
   const [showClientDropdown, setShowClientDropdown] = useState(false)
   const [selectedClient, setSelectedClient] = useState(null)
   const [clientAddresses, setClientAddresses] = useState([])
+  const [productPrices, setProductPrices] = useState({})
   const dropdownRef = useRef(null)
 
   useEffect(() => {
@@ -52,16 +62,13 @@ export default function SaleFormModal({
         discountPercentage: item.discount_percentage
       }))
 
-      const formatDate = (dateString) => {
-        const date = new Date(dateString)
-        date.setMinutes(date.getMinutes() + date.getTimezoneOffset())
-        return date.toISOString().split('T')[0]
-      }
+      const formattedSaleDate = formatDate(editingSale.sale_date)
+      const formattedDeliveryDate = formatDate(editingSale.delivery_date)
 
       setFormData({
         clientId: editingSale.client_id || '',
-        saleDate: formatDate(editingSale.sale_date),
-        deliveryDate: formatDate(editingSale.delivery_date),
+        saleDate: formattedSaleDate,
+        deliveryDate: formattedDeliveryDate,
         deliveryAddressId: editingSale.delivery_address_id,
         items: items || [],
         notes: editingSale.notes || ''
@@ -101,67 +108,199 @@ export default function SaleFormModal({
     }
   }, [formData.clientId])
 
-  // Fetch product prices when sale date changes
+  // Fetch product prices when client or sale date changes
   useEffect(() => {
-    if (formData.saleDate) {
-      fetchProductPrices(formData.saleDate)
+    if (formData.saleDate && formData.clientId) {
+      fetchProductPrices(formData.saleDate, formData.clientId)
     }
-  }, [formData.saleDate])
+  }, [formData.saleDate, formData.clientId])
+
+  // Add useEffect to fetch prices when component mounts with initial data
+  useEffect(() => {
+    if (formData.clientId && formData.saleDate) {
+      console.log('Initial fetch of product prices');
+      fetchProductPrices(formData.saleDate, formData.clientId);
+    }
+  }, []);
 
   const fetchSpecialPrices = async (clientId) => {
-    if (!clientId) return
+    if (!clientId) return;
+    
+    const currentDate = formatDate(new Date());
+    
     const { data, error } = await supabase
       .from('client_prices')
       .select('*')
       .eq('client_id', clientId)
+      .lte('start_date', currentDate)
+      .or(`end_date.is.null,end_date.gt.${currentDate}`);
 
     if (error) {
-      console.error('Error fetching special prices:', error)
+      console.error('Error fetching special prices:', error);
     } else {
-      const pricesMap = {}
+      console.log('Fetched special prices:', data);
+      const pricesMap = {};
       data.forEach(price => {
-        pricesMap[price.product_id] = price.final_price
-      })
-      setSpecialPrices(pricesMap)
+        pricesMap[price.product_id] = {
+          price: price.final_price,
+          isClientPrice: true,
+          validFrom: price.start_date,
+          validUntil: price.end_date
+        };
+      });
+      setSpecialPrices(pricesMap);
     }
-  }
+  };
 
-  const fetchProductPrices = async (saleDate) => {
-    const promises = products.map(async (product) => {
-      const { data, error } = await supabase.rpc('get_product_price_at_date', {
-        product_id: product.id,
-        target_date: saleDate
-      })
+  const fetchProductPrices = async (saleDate, clientId) => {
+    if (!saleDate || !clientId) {
+      console.log('Missing required data:', { saleDate, clientId });
+      return;
+    }
+    
+    const formattedDate = formatDateWithTimezone(saleDate);
+    console.log('Fetching prices with:', { 
+      originalDate: saleDate,
+      formattedDate,
+      clientId,
+      products: products.map(p => ({ id: p.id, name: p.name }))
+    });
+    
+    try {
+      // Get prices for all products
+      const { data, error } = await supabase
+        .from('products')
+        .select('id')
+        .in('id', products.map(p => p.id))
+        .then(async ({ data: productIds, error: productsError }) => {
+          if (productsError) throw productsError;
+          
+          console.log('Fetching prices for products:', productIds);
+          
+          const prices = await Promise.all(
+            productIds.map(({ id }) =>
+              supabase
+                .rpc('get_product_price_at_date', {
+                  product_id: id,
+                  target_date: formattedDate,
+                  client_id: clientId
+                })
+                .then(({ data, error }) => {
+                  console.log('Price result for product', id, ':', { data, error });
+                  return { id, data, error };
+                })
+            )
+          );
+          
+          return { data: prices };
+        });
+
+      if (error) throw error;
+
+      // Create a map of product prices
+      const priceMap = {};
+      data.forEach(({ id, data: priceData, error: priceError }) => {
+        if (priceError) {
+          console.error('Error fetching price for product', id, ':', priceError);
+          return;
+        }
+        
+        if (priceData && priceData[0]) {
+          priceMap[id] = {
+            price: parseFloat(priceData[0].price),
+            isClientPrice: priceData[0].price_type === 'client'
+          };
+        }
+      });
+
+      console.log('Final price map:', priceMap);
+      setProductPrices(priceMap);
+
+      // Update unit prices for existing items
+      setFormData(prev => ({
+        ...prev,
+        items: prev.items.map(item => {
+          const priceInfo = priceMap[item.productId];
+          if (priceInfo) {
+            return {
+              ...item,
+              unitPrice: priceInfo.price,
+              priceType: priceInfo.isClientPrice ? 'client' : 'regular',
+              totalPrice: item.quantity * priceInfo.price
+            };
+          }
+          return item;
+        })
+      }));
+    } catch (error) {
+      console.error('Error in fetchProductPrices:', error);
+    }
+  };
+
+  const fetchClientAddresses = async (clientId) => {
+    if (!clientId) return;
+    
+    console.log('Fetching addresses for client:', clientId);
+    try {
+      const { data, error } = await supabase
+        .from('client_addresses')
+        .select(`
+          id,
+          street_address,
+          is_default,
+          borough_id,
+          neighborhood_id,
+          boroughs (
+            id,
+            name
+          ),
+          neighborhoods (
+            id,
+            name
+          )
+        `)
+        .eq('client_id', clientId)
+        .order('is_default', { ascending: false });
 
       if (error) {
-        console.error('Error fetching product price:', error)
-        return null
+        console.error('Error fetching client addresses:', error);
+        setClientAddresses([]);
+        return;
       }
 
-      return {
-        productId: product.id,
-        price: data
+      console.log('Fetched addresses:', data);
+      setClientAddresses(data || []);
+      
+      // Auto-select default address if available
+      const defaultAddress = data?.find(addr => addr.is_default);
+      if (defaultAddress) {
+        console.log('Setting default address:', defaultAddress.id);
+        setFormData(prev => ({
+          ...prev,
+          deliveryAddressId: defaultAddress.id
+        }));
       }
-    })
+    } catch (error) {
+      console.error('Unexpected error fetching client addresses:', error);
+      setClientAddresses([]);
+    }
+  };
 
-    const prices = await Promise.all(promises)
-    const priceMap = {}
-    prices.forEach(price => {
-      if (price) {
-        priceMap[price.productId] = price.price
-      }
-    })
-
-    // Update unit prices for existing items
-    setFormData(prev => ({
-      ...prev,
-      items: prev.items.map(item => ({
-        ...item,
-        unitPrice: specialPrices[item.productId] || priceMap[item.productId] || 0,
-        totalPrice: item.quantity * (specialPrices[item.productId] || priceMap[item.productId] || 0)
-      }))
-    }))
-  }
+  const handleClientSelect = async (client) => {
+    console.log('Client selected:', client);
+    setSelectedClient(client);
+    setFormData(prev => ({ 
+      ...prev, 
+      clientId: client.id,
+      deliveryAddressId: '' // Reset address ID before fetching new addresses
+    }));
+    setClientSearch(client.name);
+    setShowClientDropdown(false);
+    
+    // First fetch addresses, then fetch prices
+    await fetchClientAddresses(client.id);
+    await fetchProductPrices(formData.saleDate, client.id);
+  };
 
   const addItem = () => {
     setFormData(prev => ({
@@ -176,28 +315,6 @@ export default function SaleFormModal({
     }))
   }
 
-  const handleAddItem = (productId) => {
-    const product = products.find(p => p.id === productId)
-    if (!product) return
-
-    // Get the current price based on special prices or historical prices
-    const unitPrice = specialPrices[productId] || product.default_price || 0
-
-    setFormData(prev => ({
-      ...prev,
-      items: [
-        ...prev.items,
-        {
-          productId,
-          quantity: 1,
-          unitPrice,
-          totalPrice: unitPrice,
-          discountPercentage: 0
-        }
-      ]
-    }))
-  }
-
   const removeItem = (index) => {
     setFormData(prev => ({
       ...prev,
@@ -205,36 +322,28 @@ export default function SaleFormModal({
     }))
   }
 
-  const updateItem = (index, updates) => {
+  const updateItem = (index, field, value) => {
     setFormData(prev => {
       const newItems = [...prev.items]
-      
-      // Update the specific item at the index
-      newItems[index] = {
-        ...newItems[index], // Keep existing item properties
-        ...updates // Apply new updates
+      const item = { ...newItems[index] }
+
+      if (field === 'productId') {
+        const priceInfo = productPrices[value]
+        
+        console.log('Updating product:', value);
+        console.log('Price info:', priceInfo);
+        
+        item.productId = value
+        item.unitPrice = priceInfo?.price || 0
+        item.totalPrice = (priceInfo?.price || 0) * (item.quantity || 0)
+        item.priceType = priceInfo?.isClientPrice ? 'client' : 'regular'
+      } else if (field === 'quantity') {
+        item.quantity = value
+        item.totalPrice = item.unitPrice * value
       }
 
-      // If quantity changed, update total price
-      if ('quantity' in updates) {
-        const quantity = parseFloat(updates.quantity) || 0
-        newItems[index].quantity = quantity
-        newItems[index].totalPrice = quantity * newItems[index].unitPrice
-      }
-
-      // If product changed, update unit price and total price
-      if (updates.productId) {
-        const specialPrice = specialPrices[updates.productId]
-        const productPrice = products.find(p => p.id === updates.productId)?.default_price || 0
-        newItems[index].unitPrice = specialPrice || productPrice
-        newItems[index].totalPrice = newItems[index].quantity * newItems[index].unitPrice
-      }
-
-      // Return new form data with updated items
-      return {
-        ...prev,
-        items: newItems
-      }
+      newItems[index] = item
+      return { ...prev, items: newItems }
     })
   }
 
@@ -284,44 +393,26 @@ export default function SaleFormModal({
     }
   }
 
-  const handleClientSelect = async (client) => {
-    setSelectedClient(client)
-    setFormData(prev => ({ 
-      ...prev, 
-      clientId: client.id,
-      deliveryAddressId: '' 
-    }))
-    setClientSearch(client.name)
-    setShowClientDropdown(false)
+  const handleSaleDateChange = (newSaleDate) => {
+    console.log('Sale date changed to:', newSaleDate);
+    setFormData(prev => {
+      // If delivery date is before the new sale date, update it to the sale date
+      const updatedDeliveryDate = prev.deliveryDate < newSaleDate 
+        ? newSaleDate 
+        : prev.deliveryDate;
+      
+      return { 
+        ...prev, 
+        saleDate: newSaleDate,
+        deliveryDate: updatedDeliveryDate
+      };
+    });
     
-    await fetchClientAddresses(client.id)
-    fetchSpecialPrices(client.id)
-  }
-
-  const fetchClientAddresses = async (clientId) => {
-    if (!clientId) return
-    try {
-      const { data, error } = await supabase
-        .from('client_addresses')
-        .select(`
-          *,
-          boroughs:boroughs!inner(name),
-          neighborhoods:neighborhoods!inner(name)
-        `)
-        .eq('client_id', clientId)
-        .order('is_default', { ascending: false })
-
-      if (error) {
-        console.error('Error fetching client addresses:', error)
-        setClientAddresses([])
-      } else {
-        setClientAddresses(data || [])
-      }
-    } catch (error) {
-      console.error('Unexpected error fetching client addresses:', error)
-      setClientAddresses([])
+    // Refresh prices if we have a client selected
+    if (formData.clientId) {
+      fetchProductPrices(newSaleDate, formData.clientId);
     }
-  }
+  };
 
   useEffect(() => {
     function handleClickOutside(event) {
@@ -352,7 +443,7 @@ export default function SaleFormModal({
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-      <div className="bg-white rounded-lg p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto">
+      <div className="bg-white rounded-lg p-6 w-full max-w-4xl max-h-[90vh] overflow-y-auto relative">
         <div className="flex justify-between items-center mb-4">
           <h2 className="text-xl font-semibold">
             {editingSale ? 'Sale Details' : 'New Sale'}
@@ -395,61 +486,50 @@ export default function SaleFormModal({
           </Alert>
         )}
 
-        <form onSubmit={handleSubmit} className="space-y-4">
+        <form onSubmit={handleSubmit} className="space-y-6">
           {/* Client Search */}
-          <div ref={dropdownRef}>
+          <div className="mb-4 relative" ref={dropdownRef}>
             <label className="block mb-2">Client</label>
             <div className="relative">
-              <div className="relative">
-                <Input
-                  type="text"
-                  placeholder="Search client..."
-                  value={clientSearch}
-                  onChange={(e) => {
-                    if (!editingSale) { // Only allow changes if not editing
-                      setClientSearch(e.target.value)
-                      setShowClientDropdown(true)
-                      if (!e.target.value) {
-                        setSelectedClient(null)
-                        setFormData(prev => ({ ...prev, clientId: '' }))
-                      }
+              <Input
+                type="text"
+                value={clientSearch}
+                onChange={(e) => {
+                  if (!editingSale) { // Only allow changes if not editing
+                    setClientSearch(e.target.value)
+                    setShowClientDropdown(true)
+                    if (!e.target.value) {
+                      setSelectedClient(null)
+                      setFormData(prev => ({ ...prev, clientId: '' }))
                     }
-                  }}
-                  className={`mb-2 ${editingSale ? 'bg-gray-100' : ''}`}
-                  required
-                  readOnly={!!editingSale} // Make read-only when editing
-                />
-                <Search className="absolute right-3 top-2.5 h-5 w-5 text-gray-400" />
-              </div>
-              
-              {showClientDropdown && clientSearch && (
-                <div className="absolute z-10 w-full bg-white border rounded-md shadow-lg max-h-60 overflow-auto">
-                  {filteredClients.length > 0 ? (
-                    filteredClients.map(client => (
-                      <div
-                        key={client.id}
-                        className="px-4 py-2 hover:bg-gray-100 cursor-pointer"
-                        onClick={() => handleClientSelect(client)}
-                      >
-                        {client.name}
-                      </div>
-                    ))
-                  ) : (
-                    <div className="px-4 py-2 text-gray-500">No clients found</div>
-                  )}
-                </div>
-              )}
+                  }
+                }}
+                onFocus={() => setShowClientDropdown(true)}
+                placeholder="Search clients..."
+                required
+                className="pr-8"
+                readOnly={!!editingSale} // Make read-only when editing
+              />
+              <Search className="absolute right-2 top-2.5 h-4 w-4 text-gray-500" />
             </div>
-            {selectedClient && (
-              <div className="mt-2 p-2 bg-gray-50 rounded">
-                <p className="text-sm font-medium">{selectedClient.name}</p>
+            {showClientDropdown && (
+              <div className="absolute z-10 w-full mt-1 bg-white border rounded-md shadow-lg max-h-60 overflow-auto">
+                {filteredClients.map(client => (
+                  <div
+                    key={client.id}
+                    className="px-4 py-2 hover:bg-gray-100 cursor-pointer"
+                    onClick={() => handleClientSelect(client)}
+                  >
+                    {client.name}
+                  </div>
+                ))}
               </div>
             )}
           </div>
 
-          {/* Delivery Address - Moved up, right after client selection */}
-          {selectedClient && clientAddresses.length > 0 && (
-            <div>
+          {/* Delivery Address Selection */}
+          {selectedClient && (
+            <div className="mb-4">
               <label className="block mb-2">Delivery Address</label>
               <select
                 value={formData.deliveryAddressId || ''}
@@ -460,28 +540,34 @@ export default function SaleFormModal({
                 className="w-full p-2 border rounded"
                 required
               >
-                <option value="">Select Delivery Address</option>
-                {clientAddresses.map(address => (
-                  <option key={address.id} value={address.id}>
-                    {address.street_address} - {address.boroughs.name}, {address.neighborhoods.name}
-                    {address.is_default ? ' (Default)' : ''}
-                  </option>
-                ))}
+                <option value="">Select delivery address</option>
+                {clientAddresses.map(address => {
+                  // Build address parts, filtering out empty values
+                  const addressParts = [
+                    address.street_address,
+                    address.neighborhoods?.name,
+                    address.boroughs?.name
+                  ].filter(Boolean);
+
+                  return (
+                    <option key={address.id} value={address.id}>
+                      {addressParts.join(', ')}
+                      {address.is_default ? ' (Default)' : ''}
+                    </option>
+                  );
+                })}
               </select>
             </div>
           )}
 
           {/* Dates */}
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-2 gap-4 mb-4">
             <div>
               <label className="block mb-2">Sale Date</label>
               <Input
                 type="date"
                 value={formData.saleDate}
-                onChange={(e) => setFormData(prev => ({ 
-                  ...prev, 
-                  saleDate: e.target.value 
-                }))}
+                onChange={(e) => handleSaleDateChange(e.target.value)}
                 required
               />
             </div>
@@ -490,6 +576,7 @@ export default function SaleFormModal({
               <Input
                 type="date"
                 value={formData.deliveryDate}
+                min={formData.saleDate}
                 onChange={(e) => setFormData(prev => ({ 
                   ...prev, 
                   deliveryDate: e.target.value 
@@ -513,10 +600,8 @@ export default function SaleFormModal({
               <div key={index} className="grid grid-cols-12 gap-4 items-end">
                 <div className="col-span-5">
                   <select
-                    value={item.productId}
-                    onChange={(e) => updateItem(index, { 
-                      productId: e.target.value
-                    })}
+                    value={item.productId || ''}
+                    onChange={(e) => updateItem(index, 'productId', e.target.value)}
                     className="w-full p-2 border rounded"
                     required
                   >
@@ -532,10 +617,8 @@ export default function SaleFormModal({
                 <div className="col-span-2">
                   <Input
                     type="number"
-                    value={item.quantity}
-                    onChange={(e) => updateItem(index, { 
-                      quantity: parseFloat(e.target.value)
-                    })}
+                    value={item.quantity || ''}
+                    onChange={(e) => updateItem(index, 'quantity', parseFloat(e.target.value))}
                     placeholder="Qty"
                     required
                     min="1"
@@ -544,19 +627,24 @@ export default function SaleFormModal({
                 </div>
 
                 <div className="col-span-2">
-                  <Input
-                    type="number"
-                    value={item.unitPrice}
-                    readOnly
-                    placeholder="Price"
-                    className="bg-gray-50"
-                  />
+                  <div className="relative">
+                    <Input
+                      type="text"
+                      value={formatCurrency(item.unitPrice) || ''}
+                      readOnly
+                      placeholder="Price"
+                      className={`bg-gray-50 ${item.priceType === 'client' ? 'border-blue-500' : ''}`}
+                    />
+                    {item.priceType === 'client' && (
+                      <span className="absolute -top-4 right-0 text-xs text-blue-500">Special Price</span>
+                    )}
+                  </div>
                 </div>
 
                 <div className="col-span-2">
                   <Input
-                    type="number"
-                    value={item.totalPrice?.toFixed(2)}
+                    type="text"
+                    value={formatCurrency(item.totalPrice) || ''}
                     readOnly
                     placeholder="Total"
                     className="bg-gray-50"
@@ -584,7 +672,7 @@ export default function SaleFormModal({
 
           {/* Notes */}
           <div>
-            <label className="block mb-2">Notes</label>
+            <label className="block mb-2">Notas</label>
             <textarea
               value={formData.notes}
               onChange={(e) => setFormData(prev => ({ 
@@ -592,17 +680,17 @@ export default function SaleFormModal({
                 notes: e.target.value 
               }))}
               className="w-full p-2 border rounded min-h-[100px]"
-              placeholder="Add any notes about this sale..."
+              placeholder="Agregar notas sobre esta venta..."
             />
           </div>
 
           {/* Payment Information */}
           <div className="space-y-4 border-t pt-4 mt-4">
-            <h3 className="font-medium">Payment Information</h3>
+            <h3 className="font-medium">Información de Pago</h3>
             
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <label className="block mb-2">Payment Status</label>
+                <label className="block mb-2">Estado de Pago</label>
                 <select
                   value={formData.paymentStatus}
                   onChange={(e) => setFormData(prev => ({ 
@@ -612,15 +700,15 @@ export default function SaleFormModal({
                   }))}
                   className="w-full p-2 border rounded"
                 >
-                  <option value="pending">Pending</option>
-                  <option value="paid">Paid</option>
-                  <option value="cancelled">Cancelled</option>
+                  <option value="pending">Pendiente</option>
+                  <option value="paid">Pagado</option>
+                  <option value="cancelled">Cancelado</option>
                 </select>
               </div>
 
               {formData.paymentStatus === 'paid' && (
                 <div>
-                  <label className="block mb-2">Payment Method</label>
+                  <label className="block mb-2">Método de Pago</label>
                   <select
                     value={formData.paymentMethodId}
                     onChange={(e) => setFormData(prev => ({ 
@@ -630,7 +718,7 @@ export default function SaleFormModal({
                     className="w-full p-2 border rounded"
                     required
                   >
-                    <option value="">Select Payment Method</option>
+                    <option value="">Seleccione el Método de Pago</option>
                     {paymentMethods.map(method => (
                       <option key={method.id} value={method.id}>
                         {method.name}
@@ -644,7 +732,7 @@ export default function SaleFormModal({
             {formData.paymentStatus === 'paid' && (
               <>
                 <div>
-                  <label className="block mb-2">Payment Date</label>
+                  <label className="block mb-2">Fecha de Pago</label>
                   <Input
                     type="date"
                     value={formData.paymentDate}
@@ -657,7 +745,7 @@ export default function SaleFormModal({
                 </div>
 
                 <div>
-                  <label className="block mb-2">Payment Notes</label>
+                  <label className="block mb-2">Notas de Pago</label>
                   <textarea
                     value={formData.paymentNotes}
                     onChange={(e) => setFormData(prev => ({ 
@@ -665,7 +753,7 @@ export default function SaleFormModal({
                       paymentNotes: e.target.value 
                     }))}
                     className="w-full p-2 border rounded"
-                    placeholder="Add any notes about the payment..."
+                    placeholder="Agregar notas sobre el pago..."
                   />
                 </div>
               </>
@@ -674,10 +762,10 @@ export default function SaleFormModal({
 
           <div className="flex justify-end gap-4">
             <Button type="button" variant="ghost" onClick={onClose}>
-              Cancel
+              Cancelar
             </Button>
             <Button type="submit">
-              {editingSale ? 'Update Sale' : 'Create Sale'}
+              {editingSale ? 'Actualizar Venta' : 'Crear Venta'}
             </Button>
           </div>
         </form>
