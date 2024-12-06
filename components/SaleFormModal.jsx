@@ -8,19 +8,19 @@ import { formatCurrency } from '@/lib/utils/format'
 
 // Add this helper function at the top of the component, after the imports
 const formatDate = (dateString) => {
+  if (!dateString) return ''
+  
+  // Parse the input date string
   const date = new Date(dateString)
-  // Ensure we're working with local date without time component
-  const localDate = new Date(date.getFullYear(), date.getMonth(), date.getDate())
-  return localDate.toISOString().split('T')[0]
+  
+  // Get the local date components
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  
+  // Return the date in YYYY-MM-DD format
+  return `${year}-${month}-${day}`
 }
-
-const formatDateWithTimezone = (dateString) => {
-  const date = new Date(dateString);
-  // Add timezone offset to ensure correct date in UTC
-  const timezoneOffset = date.getTimezoneOffset() * 60000; // offset in milliseconds
-  const localDate = new Date(date.getTime() + timezoneOffset);
-  return localDate.toISOString().split('T')[0];
-};
 
 export default function SaleFormModal({ 
   isOpen, 
@@ -62,16 +62,18 @@ export default function SaleFormModal({
         discountPercentage: item.discount_percentage
       }))
 
-      const formattedSaleDate = formatDate(editingSale.sale_date)
-      const formattedDeliveryDate = formatDate(editingSale.delivery_date)
-
+      // For editing, use the dates directly from the database
       setFormData({
         clientId: editingSale.client_id || '',
-        saleDate: formattedSaleDate,
-        deliveryDate: formattedDeliveryDate,
+        saleDate: editingSale.sale_date,
+        deliveryDate: editingSale.delivery_date,
         deliveryAddressId: editingSale.delivery_address_id,
         items: items || [],
-        notes: editingSale.notes || ''
+        notes: editingSale.notes || '',
+        paymentStatus: editingSale.payment_status || 'pending',
+        paymentMethodId: editingSale.payment_method_id || '',
+        paymentDate: editingSale.payment_date ? formatDate(editingSale.payment_date) : '',
+        paymentNotes: editingSale.payment_notes || ''
       })
 
       const client = clients.find(client => client.id === editingSale.client_id)
@@ -81,12 +83,18 @@ export default function SaleFormModal({
         fetchSpecialPrices(client.id)
       }
     } else {
+      // For new sales, use today's date
+      const today = new Date()
       setFormData({
         clientId: '',
-        saleDate: formatDate(new Date()),
-        deliveryDate: formatDate(new Date()),
+        saleDate: formatDate(today),
+        deliveryDate: formatDate(today),
         items: [],
-        notes: ''
+        notes: '',
+        paymentStatus: 'pending',
+        paymentMethodId: '',
+        paymentDate: '',
+        paymentNotes: ''
       })
       setSelectedClient(null)
       setClientAddresses([])
@@ -158,7 +166,7 @@ export default function SaleFormModal({
       return;
     }
     
-    const formattedDate = formatDateWithTimezone(saleDate);
+    const formattedDate = formatDate(saleDate);
     console.log('Fetching prices with:', { 
       originalDate: saleDate,
       formattedDate,

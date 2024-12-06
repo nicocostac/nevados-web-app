@@ -23,8 +23,8 @@ export default function ClientFormModal({
     email: '',
     phone: '',
     notes: '',
-    type_id: '',
-    communication_preference: 'email',
+    type_id: clientTypes.find(type => type.name.toLowerCase() === 'retail')?.id || '',
+    communication_preference: 'whatsapp',
     status: 'active',
     is_tj: false
   })
@@ -46,8 +46,8 @@ export default function ClientFormModal({
         email: editingClient.email || '',
         phone: editingClient.phone || '',
         notes: editingClient.notes || '',
-        type_id: editingClient.type_id || '',
-        communication_preference: editingClient.communication_preference || 'email',
+        type_id: editingClient.type_id || clientTypes.find(type => type.name.toLowerCase() === 'retail')?.id || '',
+        communication_preference: editingClient.communication_preference || 'whatsapp',
         status: editingClient.status || 'active',
         is_tj: editingClient.is_tj || false
       })
@@ -64,8 +64,8 @@ export default function ClientFormModal({
         email: '',
         phone: '',
         notes: '',
-        type_id: clientTypes[0]?.id || '',
-        communication_preference: 'email',
+        type_id: clientTypes.find(type => type.name.toLowerCase() === 'retail')?.id || '',
+        communication_preference: 'whatsapp',
         status: 'active',
         is_tj: false
       })
@@ -377,8 +377,8 @@ export default function ClientFormModal({
         email: '',
         phone: '',
         notes: '',
-        type_id: clientTypes[0]?.id || '',
-        communication_preference: 'email',
+        type_id: clientTypes.find(type => type.name.toLowerCase() === 'retail')?.id || '',
+        communication_preference: 'whatsapp',
         status: 'active',
         is_tj: false
       })

@@ -364,8 +364,6 @@ Administrators and Salespersons
 - Accurate billing
 - Reduced cancellations
 
-
-
 ### 11. Heatmap for Delivery Addresses
 
 #### Objective
@@ -462,6 +460,170 @@ Administrators
 - Improved efficiency of marketing campaigns
 - Optimized delivery routes through geographic analysis
 
+### 12. Product Bundles System
+
+#### Overview
+The bundle system allows creating two types of product groupings:
+1. Quantity Bundles (same product, different quantities)
+2. Mixed Bundles (different products with specific quantities)
+
+#### Bundle Types
+
+##### Quantity Bundles
+- Applied to single product
+- Multiple quantity tiers
+- Automatic price application based on quantity
+- Each tier must have better unit price than previous
+
+**Example:**
+```
+Product: Recargas
+Tier 1: 1 unit = $100/unit (base price)
+Tier 2: 2-4 units = $90/unit
+Tier 3: 5+ units = $85/unit
+```
+
+##### Mixed Bundles
+- Multiple different products
+- Fixed quantities for each product
+- Single bundle price
+- Must be explicitly selected
+
+**Example:**
+```
+Bundle: "Combo Básico"
+- 2 Garrafones
+- 1 Recarga
+Price: $180
+```
+
+#### Bundle Configuration
+
+##### Common Properties
+- Name
+- Description
+- Status (active/inactive)
+- Start Date (optional)
+- End Date (optional)
+- Auto-apply (yes/no)
+- Allow multiple applications (yes/no)
+
+##### Quantity Bundle Properties
+- Product ID
+- Minimum quantity
+- Price per unit
+- Maximum quantity (optional)
+
+##### Mixed Bundle Properties
+- List of products with quantities
+- Total bundle price
+- Savings display (%)
+
+#### Business Rules
+
+##### Quantity Bundles
+1. Tiers must be created in ascending order
+2. Each tier must have lower price per unit than previous
+3. No gaps allowed between tiers
+4. System automatically applies best tier
+5. Multiple applications allowed if configured
+
+##### Mixed Bundles
+1. Must be explicitly selected in sales
+2. Cannot be automatically applied
+3. All products must be available
+4. Quantities are fixed
+5. Multiple applications if configured
+
+#### User Interface
+
+##### Bundle Creation
+1. Product Selection
+   - Single product → Quantity Bundle
+   - Multiple products → Mixed Bundle
+
+2. Quantity/Price Configuration
+   - Set quantities
+   - Set pricing
+   - System validates rules
+   - Shows savings calculation
+
+##### Bundle Display
+- Visual indicator in product list
+- Bundle details expandable
+- Price comparison with regular prices
+- Savings highlight
+
+##### Sales Integration
+- Bundle suggestions when applicable
+- Automatic quantity bundle application
+- Mixed bundle selection option
+- Clear price breakdown
+
+#### Analytics
+
+##### Tracking Metrics
+- Sales by bundle type
+- Bundle vs regular sales
+- Savings generated
+- Most popular bundles
+- Bundle conversion rate
+
+##### Reports
+- Bundle performance
+- Product usage in bundles
+- Client bundle preferences
+- Revenue impact
+
+#### Database Structure
+
+```sql
+bundles
+- id
+- name
+- description
+- type (quantity/mixed)
+- status
+- start_date
+- end_date
+- auto_apply
+- allow_multiple
+- created_at
+- updated_at
+
+bundle_products
+- id
+- bundle_id
+- product_id
+- quantity
+- unit_price (for quantity bundles)
+- created_at
+- updated_at
+
+bundle_sales
+- id
+- sale_id
+- bundle_id
+- quantity_applied
+- created_at
+```
+
+#### Implementation Phases
+
+##### Phase 1: Basic Bundle System
+- Basic bundle creation
+- Quantity bundle implementation
+- Simple bundle application in sales
+
+##### Phase 2: Advanced Features
+- Mixed bundles
+- Automatic application
+- Bundle suggestions
+
+##### Phase 3: Analytics & Optimization
+- Bundle tracking
+- Performance analytics
+- Optimization tools
 
 ## Technical Documentation
 
