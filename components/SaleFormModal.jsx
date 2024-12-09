@@ -7,25 +7,31 @@ import { supabase } from '@/lib/supabaseClient'
 import { formatCurrency } from '@/lib/utils/format'
 
 // Add this helper function at the top of the component, after the imports
-const formatDate = (dateString) => {
-  if (!dateString) return ''
-  
-  // Parse the input date string
-  const date = new Date(dateString)
-  
-  // Get the local date components
-  const year = date.getFullYear()
-  const month = String(date.getMonth() + 1).padStart(2, '0')
-  const day = String(date.getDate()).padStart(2, '0')
-  
-  // Return the date in YYYY-MM-DD format
-  return `${year}-${month}-${day}`
-}
+const formatDate = (date) => {
+  if (!date) return null;
+  // Ensure we're working with a Date object
+  const d = new Date(date);
+  // Format as YYYY-MM-DD HH:mm:ss in UTC
+  return d.toISOString();
+};
+
+const formatDateForInput = (date) => {
+  if (!date) return '';
+  const d = new Date(date);
+  return d.toISOString().split('T')[0]; // Returns YYYY-MM-DD
+};
+
+const formatDateForDB = (date) => {
+  if (!date) return null;
+  const d = new Date(date);
+  return d.toISOString(); // Returns full ISO string for DB
+};
 
 export default function SaleFormModal({ 
   isOpen, 
   onClose, 
   onSubmit, 
+  onSuccess = () => {}, 
   editingSale = null,
   clients = [],
   products = [],
@@ -34,8 +40,9 @@ export default function SaleFormModal({
   const [error, setError] = useState('')
   const [formData, setFormData] = useState({
     clientId: '',
-    saleDate: new Date().toISOString().split('T')[0],
-    deliveryDate: new Date().toISOString().split('T')[0],
+    deliveryAddressId: '',
+    saleDate: formatDateForInput(new Date()),
+    deliveryDate: formatDateForInput(new Date()),
     items: [],
     notes: '',
     paymentStatus: 'pending',
@@ -50,7 +57,310 @@ export default function SaleFormModal({
   const [selectedClient, setSelectedClient] = useState(null)
   const [clientAddresses, setClientAddresses] = useState([])
   const [productPrices, setProductPrices] = useState({})
+  const [bundleDiscount, setBundleDiscount] = useState(0);
   const dropdownRef = useRef(null)
+  const [loading, setLoading] = useState(false)
+
+  const calculateItemTotal = (quantity, priceInfo) => {
+    if (!priceInfo) return 0;
+    
+    const qty = Math.max(1, Number(quantity));
+    console.log('Calculating total for:', { qty, priceInfo });
+    
+    // Special prices (client) apply to all quantities
+    if (priceInfo.price_type === 'client') {
+      console.log('Using client price:', priceInfo.price);
+      return qty * Number(priceInfo.price);
+    }
+    
+    // Check quantity bundles
+    if (priceInfo.quantity_bundles && priceInfo.quantity_bundles.length > 0) {
+      // Sort bundles by quantity in descending order to get the best price
+      const sortedBundles = [...priceInfo.quantity_bundles].sort((a, b) => 
+        Number(b.bundle_quantity) - Number(a.bundle_quantity)
+      );
+
+      // Find the first bundle that applies
+      const applicableBundle = sortedBundles.find(bundle => 
+        qty >= Number(bundle.bundle_quantity)
+      );
+      
+      if (applicableBundle) {
+        console.log('Using quantity bundle price:', applicableBundle);
+        // Calculate unit price from bundle (total bundle price / bundle quantity)
+        const bundleQuantity = Number(applicableBundle.bundle_quantity);
+        const unitPrice = Number(applicableBundle.price) / bundleQuantity;
+        const total = qty * unitPrice;
+        console.log('Bundle calculation:', { 
+          bundlePrice: applicableBundle.price,
+          bundleQuantity,
+          unitPrice,
+          qty,
+          total
+        });
+        return total;
+      }
+    }
+    
+    // Regular price if no special pricing applies
+    console.log('Using regular price:', priceInfo.price);
+    return qty * Number(priceInfo.price);
+  };
+
+  const handleQuantityChange = (index, value) => {
+    const newQuantity = Math.max(1, Number(value) || 1);
+    console.log('Handling quantity change:', { index, newQuantity });
+
+    setFormData(prev => {
+      const newItems = [...prev.items];
+      const item = newItems[index];
+      const priceInfo = productPrices[item.productId];
+
+      // Default to regular price
+      let unitPrice = Number(priceInfo?.price) || 0;
+
+      // Special prices (client) apply to all quantities
+      if (priceInfo?.price_type === 'client') {
+        unitPrice = Number(priceInfo.price);
+        console.log('Using client special price:', unitPrice);
+      }
+      // Then check for bundle prices
+      else if (priceInfo?.quantity_bundles && priceInfo.quantity_bundles.length > 0) {
+        // Sort bundles by quantity in descending order
+        const sortedBundles = [...priceInfo.quantity_bundles].sort((a, b) => 
+          Number(b.bundle_quantity) - Number(a.bundle_quantity)
+        );
+        
+        // Find the first (largest) bundle that applies
+        const applicableBundle = sortedBundles.find(bundle => 
+          newQuantity >= Number(bundle.bundle_quantity)
+        );
+
+        if (applicableBundle) {
+          unitPrice = Number(applicableBundle.price) / Number(applicableBundle.bundle_quantity);
+          console.log('Using bundle price:', { 
+            bundlePrice: applicableBundle.price,
+            bundleQuantity: applicableBundle.bundle_quantity,
+            calculatedUnitPrice: unitPrice
+          });
+        }
+      }
+
+      const newTotal = unitPrice * newQuantity; // Calculate total based on unit price
+      console.log('New total calculated:', { newQuantity, priceInfo, newTotal });
+
+      newItems[index] = {
+        ...item,
+        quantity: newQuantity,
+        unitPrice: unitPrice,
+        totalPrice: newTotal,
+        price_type: priceInfo ? priceInfo.price_type : null
+      };
+
+      console.log('Updated item:', newItems[index]);
+
+      return {
+        ...prev,
+        items: newItems
+      };
+    });
+  };
+
+  const checkForCompleteBundles = (items) => {
+    if (!items || items.length === 0) return 0;
+    
+    // Find all mixed bundle definitions
+    const bundles = Object.values(productPrices).filter(
+      price => price.price_type === 'bundle' && 
+      price.bundle_products && 
+      price.bundle_products.length > 0
+    );
+    
+    console.log('Found mixed bundles:', bundles);
+    
+    let totalDiscount = 0;
+    
+    bundles.forEach(bundle => {
+      if (!bundle.bundle_products) return;
+      
+      // Group items by product ID to handle multiple quantities
+      const itemsByProduct = items.reduce((acc, item) => {
+        acc[item.productId] = {
+          quantity: (acc[item.productId]?.quantity || 0) + Number(item.quantity || 0),
+          unitPrice: item.unitPrice || 0
+        };
+        return acc;
+      }, {});
+      
+      // Check if we have all products in the bundle with sufficient quantities
+      const bundleRequirements = bundle.bundle_products.reduce((acc, bp) => {
+        acc[bp.product_id] = Number(bp.quantity || 1);
+        return acc;
+      }, {});
+      
+      // Calculate how many complete bundles we can make
+      let bundleCount = Infinity;
+      for (const [productId, requiredQty] of Object.entries(bundleRequirements)) {
+        const availableQty = itemsByProduct[productId]?.quantity || 0;
+        bundleCount = Math.min(bundleCount, Math.floor(availableQty / requiredQty));
+      }
+      
+      if (bundleCount > 0 && bundleCount !== Infinity) {
+        // Calculate current total for bundle items
+        let bundleItemTotal = 0;
+        for (const [productId, requiredQty] of Object.entries(bundleRequirements)) {
+          const itemPrice = itemsByProduct[productId]?.unitPrice || 0;
+          bundleItemTotal += itemPrice * requiredQty * bundleCount;
+        }
+        
+        const bundleDiscount = Math.max(0, bundleItemTotal - (bundle.price * bundleCount));
+        console.log('Mixed bundle discount calculation:', {
+          bundleItemTotal,
+          bundlePrice: bundle.price,
+          bundleCount,
+          bundleDiscount
+        });
+        totalDiscount += bundleDiscount;
+      }
+    });
+    
+    console.log('Total mixed bundle discount:', totalDiscount);
+    return totalDiscount;
+  };
+
+  const getPriceLabel = (item, priceInfo) => {
+    if (!priceInfo) return 'Regular';
+    
+    // Special prices (client) show first
+    if (priceInfo.price_type === 'client') {
+      return 'Client';
+    }
+    
+    const qty = Math.max(1, Number(item.quantity));
+    
+    // Then show quantity bundle labels
+    if (priceInfo.quantity_bundles && priceInfo.quantity_bundles.length > 0) {
+      // Sort bundles by quantity in descending order
+      const sortedBundles = [...priceInfo.quantity_bundles].sort((a, b) => 
+        Number(b.bundle_quantity) - Number(a.bundle_quantity)
+      );
+      
+      // Find the first bundle that applies
+      const applicableBundle = sortedBundles.find(bundle => 
+        qty >= Number(bundle.bundle_quantity)
+      );
+      
+      if (applicableBundle) {
+        return `Bundle ${applicableBundle.bundle_quantity}+`;
+      }
+    }
+    
+    return 'Regular';
+  };
+
+  const calculateTotal = () => {
+    // Calculate the sum of all item totals
+    const regularTotal = formData.items.reduce((sum, item) => {
+      const itemTotal = Number(item.totalPrice) || 0;
+      return sum + itemTotal;
+    }, 0);
+    
+    // Apply any bundle discounts
+    const finalDiscount = Number(bundleDiscount) || 0;
+    const total = Math.max(0, regularTotal - finalDiscount);
+    
+    console.log('Total calculation:', { regularTotal, finalDiscount, total });
+    return total;
+  };
+
+  useEffect(() => {
+    // Recalculate bundle discounts whenever items change
+    if (formData.items.length > 0) {
+      const bundleDiscounts = checkForCompleteBundles(formData.items);
+      console.log('Recalculating bundle discounts:', bundleDiscounts);
+      setBundleDiscount(bundleDiscounts);
+    }
+  }, [formData.items, productPrices]);
+
+  const updateItem = (index, field, value) => {
+    setFormData(prev => {
+      const newItems = [...prev.items];
+      const item = { ...newItems[index] };
+      
+      if (field === 'productId') {
+        const product = products.find(p => p.id === value);
+        const priceInfo = productPrices[value];
+        
+        if (priceInfo) {
+          item.productId = value;
+          item.productName = product?.name || '';
+          item.unitPrice = priceInfo.price;
+          item.quantity = item.quantity || 1;
+          
+          // Check quantity bundles
+          if (priceInfo.quantity_bundles && priceInfo.quantity_bundles.length > 0) {
+            const qty = Math.max(1, Number(item.quantity));
+            const sortedBundles = [...priceInfo.quantity_bundles].sort((a, b) => 
+              Number(b.bundle_quantity) - Number(a.bundle_quantity)
+            );
+            
+            const applicableBundle = sortedBundles.find(bundle => 
+              qty >= Number(bundle.bundle_quantity)
+            );
+            
+            if (applicableBundle) {
+              item.unitPrice = applicableBundle.price / Number(applicableBundle.bundle_quantity);
+            }
+          }
+          
+          item.totalPrice = item.unitPrice * item.quantity;
+          
+          // Update the item
+          newItems[index] = item;
+          
+          // Check for mixed bundle discounts
+          checkForCompleteBundles(newItems);
+        }
+      } else if (field === 'quantity') {
+        item.quantity = value;
+        const priceInfo = productPrices[item.productId];
+        if (priceInfo) {
+          // Check quantity bundles
+          if (priceInfo.quantity_bundles && priceInfo.quantity_bundles.length > 0) {
+            const qty = Math.max(1, Number(value));
+            const sortedBundles = [...priceInfo.quantity_bundles].sort((a, b) => 
+              Number(b.bundle_quantity) - Number(a.bundle_quantity)
+            );
+            
+            const applicableBundle = sortedBundles.find(bundle => 
+              qty >= Number(bundle.bundle_quantity)
+            );
+            
+            if (applicableBundle) {
+              item.unitPrice = applicableBundle.price / Number(applicableBundle.bundle_quantity);
+            } else {
+              item.unitPrice = priceInfo.price;
+            }
+          }
+          
+          item.totalPrice = Number(value) * item.unitPrice;
+          
+          // Update the item
+          newItems[index] = item;
+          
+          // Check for mixed bundle discounts
+          checkForCompleteBundles(newItems);
+        }
+      }
+      
+      return { ...prev, items: newItems };
+    });
+  };
+
+  useEffect(() => {
+    console.log('Product Prices Updated:', productPrices);
+    console.log('Form Items:', formData.items);
+  }, [productPrices, formData.items]);
 
   useEffect(() => {
     if (editingSale) {
@@ -65,30 +375,32 @@ export default function SaleFormModal({
       // For editing, use the dates directly from the database
       setFormData({
         clientId: editingSale.client_id || '',
-        saleDate: editingSale.sale_date,
-        deliveryDate: editingSale.delivery_date,
+        saleDate: formatDateForInput(editingSale.sale_date),
+        deliveryDate: formatDateForInput(editingSale.delivery_date),
         deliveryAddressId: editingSale.delivery_address_id,
         items: items || [],
         notes: editingSale.notes || '',
         paymentStatus: editingSale.payment_status || 'pending',
         paymentMethodId: editingSale.payment_method_id || '',
-        paymentDate: editingSale.payment_date ? formatDate(editingSale.payment_date) : '',
+        paymentDate: editingSale.payment_date ? formatDateForInput(editingSale.payment_date) : '',
         paymentNotes: editingSale.payment_notes || ''
       })
 
       const client = clients.find(client => client.id === editingSale.client_id)
       setSelectedClient(client)
+      setClientSearch(client?.name || '')
       if (client) {
         fetchClientAddresses(client.id)
         fetchSpecialPrices(client.id)
       }
     } else {
-      // For new sales, use today's date
+      // For new sales, reset everything
       const today = new Date()
       setFormData({
         clientId: '',
-        saleDate: formatDate(today),
-        deliveryDate: formatDate(today),
+        deliveryAddressId: '',
+        saleDate: formatDateForInput(today),
+        deliveryDate: formatDateForInput(today),
         items: [],
         notes: '',
         paymentStatus: 'pending',
@@ -97,7 +409,10 @@ export default function SaleFormModal({
         paymentNotes: ''
       })
       setSelectedClient(null)
+      setClientSearch('')
       setClientAddresses([])
+      setSpecialPrices({})
+      setBundleDiscount(0)
     }
   }, [editingSale, clients])
 
@@ -134,7 +449,7 @@ export default function SaleFormModal({
   const fetchSpecialPrices = async (clientId) => {
     if (!clientId) return;
     
-    const currentDate = formatDate(new Date());
+    const currentDate = formatDateForDB(new Date());
     
     const { data, error } = await supabase
       .from('client_prices')
@@ -166,65 +481,55 @@ export default function SaleFormModal({
       return;
     }
     
-    const formattedDate = formatDate(saleDate);
-    console.log('Fetching prices with:', { 
-      originalDate: saleDate,
-      formattedDate,
-      clientId,
-      products: products.map(p => ({ id: p.id, name: p.name }))
-    });
-    
+    const formattedDate = formatDateForDB(saleDate);
+    console.log('Fetching prices for date:', formattedDate, 'client:', clientId);
+
     try {
       // Get prices for all products
-      const { data, error } = await supabase
-        .from('products')
-        .select('id')
-        .in('id', products.map(p => p.id))
-        .then(async ({ data: productIds, error: productsError }) => {
-          if (productsError) throw productsError;
-          
-          console.log('Fetching prices for products:', productIds);
-          
-          const prices = await Promise.all(
-            productIds.map(({ id }) =>
-              supabase
-                .rpc('get_product_price_at_date', {
-                  product_id: id,
-                  target_date: formattedDate,
-                  client_id: clientId
-                })
-                .then(({ data, error }) => {
-                  console.log('Price result for product', id, ':', { data, error });
-                  return { id, data, error };
-                })
-            )
-          );
-          
-          return { data: prices };
-        });
+      const allIds = [...new Set(products.map(p => p.id))];
+      const pricePromises = allIds.map(id =>
+        supabase
+          .rpc('get_product_price_at_date', {
+            product_id: id,
+            target_date: formattedDate,
+            client_id: clientId
+          })
+          .then(({ data, error }) => {
+            console.log('Price data for product', id, ':', data, error);
+            return { id, data, error };
+          })
+      );
 
-      if (error) throw error;
+      const priceResults = await Promise.all(pricePromises);
+      console.log('All price results:', priceResults);
 
-      // Create a map of product prices
       const priceMap = {};
-      data.forEach(({ id, data: priceData, error: priceError }) => {
-        if (priceError) {
-          console.error('Error fetching price for product', id, ':', priceError);
-          return;
+      for (const { id, data, error } of priceResults) {
+        if (error) {
+          console.error('Error fetching price for', id, ':', error);
+          continue;
         }
         
-        if (priceData && priceData[0]) {
+        if (data && data[0]) {
+          const priceInfo = data[0];
+          console.log('Processing price info for', id, ':', priceInfo);
+          
           priceMap[id] = {
-            price: parseFloat(priceData[0].price),
-            isClientPrice: priceData[0].price_type === 'client'
+            id,
+            price: parseFloat(priceInfo.price || 0),
+            price_type: priceInfo.price_type,
+            bundle_id: priceInfo.bundle_id,
+            bundle_quantity: priceInfo.bundle_quantity,
+            bundle_products: priceInfo.bundle_products || [],
+            quantity_bundles: priceInfo.quantity_bundles || []
           };
         }
-      });
+      }
 
       console.log('Final price map:', priceMap);
       setProductPrices(priceMap);
 
-      // Update unit prices for existing items
+      // Update existing items with new prices
       setFormData(prev => ({
         ...prev,
         items: prev.items.map(item => {
@@ -233,17 +538,214 @@ export default function SaleFormModal({
             return {
               ...item,
               unitPrice: priceInfo.price,
-              priceType: priceInfo.isClientPrice ? 'client' : 'regular',
-              totalPrice: item.quantity * priceInfo.price
+              totalPrice: calculateItemTotal(item.quantity, priceInfo)
             };
           }
           return item;
         })
       }));
     } catch (error) {
-      console.error('Error in fetchProductPrices:', error);
+      console.error('Error fetching product prices:', error);
     }
   };
+
+  const getRegularPrice = async (productId, date) => {
+    const { data, error } = await supabase
+      .from('product_prices')
+      .select('price')
+      .eq('product_id', productId)
+      .lte('start_date', date)
+      .or(`end_date.is.null,end_date.gt.${date}`)
+      .order('start_date', { ascending: false })
+      .limit(1);
+
+    if (error) {
+      console.error('Error fetching regular price:', error);
+      return null;
+    }
+
+    return data?.[0] || null;
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault()
+    setLoading(true)
+    setError('')
+
+    try {
+      // Validate required fields
+      if (!formData.clientId || !formData.deliveryAddressId || !formData.saleDate || !formData.deliveryDate) {
+        throw new Error('Please fill in all required fields')
+      }
+
+      if (formData.items.length === 0) {
+        throw new Error('Please add at least one item to the sale')
+      }
+
+      const total = calculateTotal()
+      console.log('Submitting sale with total:', total)
+
+      // Format dates for database
+      const saleDate = formatDateForDB(formData.saleDate)
+      const deliveryDate = formatDateForDB(formData.deliveryDate)
+      const paymentDate = formData.paymentDate ? formatDateForDB(formData.paymentDate) : null
+
+      // Format items for database
+      const items = formData.items.map(item => ({
+        product_id: item.productId,
+        quantity: item.quantity,
+        unit_price: item.unitPrice,
+        total_price: item.totalPrice
+      }))
+
+      let result;
+      
+      if (editingSale) {
+        // Update existing sale
+        const { data, error } = await supabase.rpc('update_sale_with_items', {
+          p_sale_id: editingSale.id,
+          p_client_id: formData.clientId,
+          p_sale_date: saleDate,
+          p_delivery_date: deliveryDate,
+          p_delivery_address_id: formData.deliveryAddressId,
+          p_total_amount: total,
+          p_notes: formData.notes,
+          p_items: items,
+          p_payment_status: formData.paymentStatus,
+          p_payment_method_id: formData.paymentMethodId || null,
+          p_payment_date: paymentDate,
+          p_payment_notes: formData.paymentNotes
+        })
+
+        if (error) throw error
+        result = data
+      } else {
+        // Create new sale
+        const { data, error } = await supabase.rpc('create_sale_with_items', {
+          p_client_id: formData.clientId,
+          p_sale_date: saleDate,
+          p_delivery_date: deliveryDate,
+          p_delivery_address_id: formData.deliveryAddressId,
+          p_total_amount: total,
+          p_notes: formData.notes,
+          p_items: items
+        })
+
+        if (error) throw error
+        result = data
+      }
+
+      onSuccess(result)
+      onClose()
+    } catch (error) {
+      console.error('Error submitting sale:', error)
+      setError(error.message)
+    } finally {
+      setLoading(false)
+    }
+  };
+
+  const handleSaleDateChange = (newSaleDate) => {
+    console.log('Sale date changed to:', newSaleDate);
+    
+    setFormData(prev => {
+      // If delivery date is before the new sale date, update it to the sale date
+      const currentDeliveryDate = prev.deliveryDate ? new Date(prev.deliveryDate) : null;
+      const newSaleDateObj = new Date(newSaleDate);
+      
+      let updatedDeliveryDate = prev.deliveryDate;
+      if (!currentDeliveryDate || currentDeliveryDate < newSaleDateObj) {
+        updatedDeliveryDate = newSaleDate;
+      }
+      
+      return { 
+        ...prev, 
+        saleDate: newSaleDate,
+        deliveryDate: updatedDeliveryDate
+      };
+    });
+
+    // Fetch prices for the new date
+    if (formData.clientId) {
+      fetchProductPrices(newSaleDate, formData.clientId);
+    }
+  };
+
+  const handleDeliveryDateChange = (newDeliveryDate) => {
+    const saleDate = new Date(formData.saleDate);
+    const deliveryDate = new Date(newDeliveryDate);
+
+    if (deliveryDate < saleDate) {
+      setError('La fecha de entrega no puede ser anterior a la fecha de venta');
+      return;
+    }
+
+    setFormData(prev => ({ 
+      ...prev, 
+      deliveryDate: newDeliveryDate
+    }));
+  };
+
+  useEffect(() => {
+    if (isOpen) {
+      const today = formatDateForInput(new Date());
+      if (editingSale) {
+        // For editing, use the dates from the sale but ensure they're in the right format
+        setFormData(prev => ({
+          ...prev,
+          clientId: editingSale.client_id,
+          deliveryAddressId: editingSale.delivery_address_id,
+          saleDate: formatDateForInput(editingSale.sale_date),
+          deliveryDate: formatDateForInput(editingSale.delivery_date),
+          notes: editingSale.notes || '',
+          items: editingSale.sale_items?.map(item => ({
+            productId: item.product_id,
+            quantity: item.quantity,
+            unitPrice: item.unit_price,
+            totalPrice: item.total_price,
+            discountPercentage: item.discount_percentage || 0
+          })) || []
+        }));
+      } else {
+        // For new sale, reset all state
+        setFormData({
+          clientId: '',
+          deliveryAddressId: '',
+          saleDate: today,
+          deliveryDate: today,
+          items: [],
+          notes: '',
+          paymentStatus: 'pending',
+          paymentMethodId: '',
+          paymentDate: '',
+          paymentNotes: ''
+        });
+        setSelectedClient(null);
+        setProductPrices({});
+        setError('');
+      }
+    }
+  }, [isOpen, editingSale]);
+
+  const addItem = () => {
+    setFormData(prev => ({
+      ...prev,
+      items: [...prev.items, { 
+        productId: '', 
+        quantity: 1,
+        unitPrice: 0,
+        totalPrice: 0,
+        discountPercentage: 0
+      }]
+    }))
+  }
+
+  const removeItem = (index) => {
+    setFormData(prev => ({
+      ...prev,
+      items: prev.items.filter((_, i) => i !== index)
+    }))
+  }
 
   const fetchClientAddresses = async (clientId) => {
     if (!clientId) return;
@@ -310,118 +812,6 @@ export default function SaleFormModal({
     await fetchProductPrices(formData.saleDate, client.id);
   };
 
-  const addItem = () => {
-    setFormData(prev => ({
-      ...prev,
-      items: [...prev.items, { 
-        productId: '', 
-        quantity: 1,
-        unitPrice: 0,
-        totalPrice: 0,
-        discountPercentage: 0
-      }]
-    }))
-  }
-
-  const removeItem = (index) => {
-    setFormData(prev => ({
-      ...prev,
-      items: prev.items.filter((_, i) => i !== index)
-    }))
-  }
-
-  const updateItem = (index, field, value) => {
-    setFormData(prev => {
-      const newItems = [...prev.items]
-      const item = { ...newItems[index] }
-
-      if (field === 'productId') {
-        const priceInfo = productPrices[value]
-        
-        console.log('Updating product:', value);
-        console.log('Price info:', priceInfo);
-        
-        item.productId = value
-        item.unitPrice = priceInfo?.price || 0
-        item.totalPrice = (priceInfo?.price || 0) * (item.quantity || 0)
-        item.priceType = priceInfo?.isClientPrice ? 'client' : 'regular'
-      } else if (field === 'quantity') {
-        item.quantity = value
-        item.totalPrice = item.unitPrice * value
-      }
-
-      newItems[index] = item
-      return { ...prev, items: newItems }
-    })
-  }
-
-  const calculateTotal = () => {
-    return formData.items.reduce((sum, item) => sum + (item.totalPrice || 0), 0)
-  }
-
-  const handleSubmit = async (e) => {
-    e.preventDefault()
-    setError('')
-
-    // Validate required fields
-    if (!formData.clientId) {
-      setError('Please select a client')
-      return
-    }
-
-    if (!formData.deliveryAddressId) {
-      setError('Please select a delivery address')
-      return
-    }
-
-    if (formData.items.length === 0) {
-      setError('Please add at least one item')
-      return
-    }
-
-    // Validate each item has required fields
-    const invalidItem = formData.items.find(item => 
-      !item.productId || !item.quantity || item.quantity <= 0
-    )
-    
-    if (invalidItem) {
-      setError('Please complete all item details (product and quantity)')
-      return
-    }
-
-    try {
-      await onSubmit({
-        ...formData,
-        totalAmount: calculateTotal()
-      })
-
-      onClose()
-    } catch (error) {
-      setError(error.message)
-    }
-  }
-
-  const handleSaleDateChange = (newSaleDate) => {
-    console.log('Sale date changed to:', newSaleDate);
-    setFormData(prev => {
-      // If delivery date is before the new sale date, update it to the sale date
-      const updatedDeliveryDate = prev.deliveryDate < newSaleDate 
-        ? newSaleDate 
-        : prev.deliveryDate;
-      
-      return { 
-        ...prev, 
-        saleDate: newSaleDate,
-        deliveryDate: updatedDeliveryDate
-      };
-    });
-    
-    // Refresh prices if we have a client selected
-    if (formData.clientId) {
-      fetchProductPrices(newSaleDate, formData.clientId);
-    }
-  };
-
   useEffect(() => {
     function handleClickOutside(event) {
       if (dropdownRef.current && !dropdownRef.current.contains(event.target)) {
@@ -439,13 +829,33 @@ export default function SaleFormModal({
     if (clientAddresses.length > 0) {
       const defaultAddress = clientAddresses.find(addr => addr.is_default)
       if (defaultAddress) {
+        console.log('Setting default address:', defaultAddress.id);
         setFormData(prev => ({
           ...prev,
           deliveryAddressId: defaultAddress.id
-        }))
+        }));
       }
     }
   }, [clientAddresses])
+
+  const renderPriceWithType = (item) => {
+    const priceText = `$${item.unitPrice.toFixed(2)}`;
+    
+    switch (item.price_type) {
+      case 'client':
+        return <span className="text-blue-600 font-medium">{priceText} (Cliente)</span>;
+      case 'bundle_unit':
+        return (
+          <span className="text-purple-600 font-medium">
+            {priceText} (Bundle {item.bundleQuantity}+)
+          </span>
+        );
+      case 'bundle':
+        return <span className="text-green-600 font-medium">{priceText} (Bundle Mixto)</span>;
+      default:
+        return priceText;
+    }
+  };
 
   if (!isOpen) return null
 
@@ -570,25 +980,25 @@ export default function SaleFormModal({
 
           {/* Dates */}
           <div className="grid grid-cols-2 gap-4 mb-4">
-            <div>
-              <label className="block mb-2">Sale Date</label>
+            <div className="flex flex-col">
+              <label className="block mb-2" htmlFor="saleDate">Fecha de Venta</label>
               <Input
+                id="saleDate"
                 type="date"
                 value={formData.saleDate}
                 onChange={(e) => handleSaleDateChange(e.target.value)}
                 required
               />
             </div>
-            <div>
-              <label className="block mb-2">Delivery Date</label>
+
+            <div className="flex flex-col">
+              <label className="block mb-2" htmlFor="deliveryDate">Fecha de Entrega</label>
               <Input
+                id="deliveryDate"
                 type="date"
                 value={formData.deliveryDate}
                 min={formData.saleDate}
-                onChange={(e) => setFormData(prev => ({ 
-                  ...prev, 
-                  deliveryDate: e.target.value 
-                }))}
+                onChange={(e) => handleDeliveryDateChange(e.target.value)}
                 required
               />
             </div>
@@ -626,7 +1036,7 @@ export default function SaleFormModal({
                   <Input
                     type="number"
                     value={item.quantity || ''}
-                    onChange={(e) => updateItem(index, 'quantity', parseFloat(e.target.value))}
+                    onChange={(e) => handleQuantityChange(index, parseFloat(e.target.value))}
                     placeholder="Qty"
                     required
                     min="1"
@@ -634,29 +1044,42 @@ export default function SaleFormModal({
                   />
                 </div>
 
-                <div className="col-span-2">
-                  <div className="relative">
-                    <Input
-                      type="text"
-                      value={formatCurrency(item.unitPrice) || ''}
-                      readOnly
-                      placeholder="Price"
-                      className={`bg-gray-50 ${item.priceType === 'client' ? 'border-blue-500' : ''}`}
-                    />
-                    {item.priceType === 'client' && (
-                      <span className="absolute -top-4 right-0 text-xs text-blue-500">Special Price</span>
-                    )}
+                <div className="col-span-2 relative mt-1">
+                  <div className="text-xs text-gray-500 absolute -top-4 left-0">
+                    {getPriceLabel(item, productPrices[item.productId])}
                   </div>
+                  <Input
+                    type="text"
+                    value={formatCurrency(item.unitPrice)}
+                    readOnly
+                    placeholder="Price"
+                    className={`bg-gray-50 ${
+                      item.price_type === 'client' ? 'border-blue-500' : 
+                      (item.price_type === 'bundle' || 
+                       (item.price_type === 'bundle_unit' && item.quantity >= item.bundleQuantity)) 
+                        ? 'border-green-500' : ''
+                    }`}
+                  />
                 </div>
 
                 <div className="col-span-2">
-                  <Input
-                    type="text"
-                    value={formatCurrency(item.totalPrice) || ''}
-                    readOnly
-                    placeholder="Total"
-                    className="bg-gray-50"
-                  />
+                  <div className="relative">
+                    <label className="absolute -top-6 left-0 text-xs font-medium text-gray-500">
+                      Total
+                    </label>
+                    <Input
+                      type="text"
+                      value={formatCurrency(item.totalPrice) || ''}
+                      readOnly
+                      placeholder="Total"
+                      className={`bg-gray-50 ${
+                        item.price_type === 'client' ? 'border-blue-500' : 
+                        (item.price_type === 'bundle' || 
+                         (item.price_type === 'bundle_unit' && item.quantity >= item.bundleQuantity)) 
+                          ? 'border-green-500' : ''
+                      }`}
+                    />
+                  </div>
                 </div>
 
                 <div className="col-span-1">
@@ -672,8 +1095,18 @@ export default function SaleFormModal({
             ))}
 
             {formData.items.length > 0 && (
-              <div className="flex justify-end text-lg font-semibold">
-                Total: {formatCurrency(calculateTotal())}
+              <div className="mt-6 space-y-2">
+                <div className="flex justify-end text-lg font-semibold">
+                  Subtotal: {formatCurrency(formData.items.reduce((sum, item) => sum + (item.totalPrice || 0), 0))}
+                </div>
+                {bundleDiscount > 0 && (
+                  <div className="flex justify-end text-lg font-semibold text-green-600">
+                    Bundle Discount: -{formatCurrency(bundleDiscount)}
+                  </div>
+                )}
+                <div className="flex justify-end text-lg font-semibold">
+                  Total: {formatCurrency(calculateTotal())}
+                </div>
               </div>
             )}
           </div>
@@ -772,7 +1205,7 @@ export default function SaleFormModal({
             <Button type="button" variant="ghost" onClick={onClose}>
               Cancelar
             </Button>
-            <Button type="submit">
+            <Button type="submit" disabled={loading}>
               {editingSale ? 'Actualizar Venta' : 'Crear Venta'}
             </Button>
           </div>

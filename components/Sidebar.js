@@ -20,7 +20,8 @@ export default function Sidebar() {
   const [userRole, setUserRole] = useState(null)
   const [openMenus, setOpenMenus] = useState({
     Settings: true,
-    Reports: true
+    Reports: true,
+    Products: true
   })
 
   // Add effect to fetch user role
@@ -59,8 +60,19 @@ export default function Sidebar() {
     {
       title: 'Products',
       icon: Package,
-      href: '/products',
-      roles: ['admin', 'manager', 'salesperson']
+      roles: ['admin', 'manager', 'salesperson'],
+      submenu: [
+        {
+          title: 'Products List',
+          href: '/products',
+          roles: ['admin', 'manager', 'salesperson']
+        },
+        {
+          title: 'Bundles',
+          href: '/bundles',
+          roles: ['admin', 'manager']
+        }
+      ]
     },
     {
       title: 'Sales',

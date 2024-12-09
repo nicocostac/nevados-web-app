@@ -718,72 +718,153 @@ $$;
 -- Name: get_product_price_at_date(uuid, date, uuid); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.get_product_price_at_date(product_id uuid, target_date date, client_id uuid DEFAULT NULL::uuid) RETURNS TABLE(price numeric, price_type text)
-    LANGUAGE plpgsql STABLE
+CREATE FUNCTION public.get_product_price_at_date(product_id uuid, target_date date, client_id uuid DEFAULT NULL::uuid) RETURNS TABLE(price numeric, price_type text, bundle_id uuid, bundle_quantity numeric)
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path TO 'public'
     AS $$
 DECLARE
-    v_client_price_exists boolean;
-    v_debug_info text;
+    v_is_bundle boolean;
+    v_bundle_price numeric;
+    v_quantity_price numeric;
+    v_bundle_record record;
 BEGIN
-    -- Debug info
-    SELECT format('Checking prices for product_id: %s, target_date: %s', product_id, target_date) INTO v_debug_info;
-    RAISE NOTICE '%', v_debug_info;
-
-    -- Check if there's a valid client-specific price
+    -- First check if this is a bundle
     SELECT EXISTS (
-        SELECT 1
-        FROM client_prices cp
-        WHERE cp.product_id = get_product_price_at_date.product_id
-        AND cp.client_id = get_product_price_at_date.client_id
-        AND cp.start_date <= get_product_price_at_date.target_date
-        AND (cp.end_date IS NULL OR cp.end_date > get_product_price_at_date.target_date)
-    ) INTO v_client_price_exists;
+        SELECT 1 FROM public.mixed_bundles mb
+        WHERE mb.id = product_id 
+        AND mb.status = 'active'
+        AND (mb.end_date IS NULL OR mb.end_date >= target_date)
+        AND mb.start_date <= target_date
+    ) INTO v_is_bundle;
 
-    -- If client_id is provided and a client price exists, return it
-    IF client_id IS NOT NULL AND v_client_price_exists THEN
-        RAISE NOTICE 'Found client-specific price';
-        RETURN QUERY
+    IF v_is_bundle THEN
+        -- If it's a bundle, return the bundle price
+        RETURN QUERY 
         SELECT 
-            cp.final_price as price,
-            'client'::text as price_type
-        FROM client_prices cp
-        WHERE cp.product_id = get_product_price_at_date.product_id
-        AND cp.client_id = get_product_price_at_date.client_id
-        AND cp.start_date <= get_product_price_at_date.target_date
-        AND (cp.end_date IS NULL OR cp.end_date > get_product_price_at_date.target_date)
-        ORDER BY cp.start_date DESC
-        LIMIT 1;
-    ELSE
-        -- If no client price exists or no client_id provided, get regular price
-        RAISE NOTICE 'Looking for regular price';
-        
-        -- Get price from product_prices
-        RETURN QUERY
-        WITH price_check AS (
-            SELECT 
-                pp.price,
-                'regular'::text as price_type,
-                pp.start_date,
-                pp.end_date
-            FROM product_prices pp
-            WHERE pp.product_id = get_product_price_at_date.product_id
-            AND pp.start_date <= get_product_price_at_date.target_date
-            AND (pp.end_date IS NULL OR pp.end_date > get_product_price_at_date.target_date)
-            ORDER BY pp.start_date DESC
-            LIMIT 1
-        )
-        SELECT p.price, p.price_type 
-        FROM price_check p;
+            mb.total_price as price,
+            'bundle'::text as price_type,
+            mb.id as bundle_id,
+            NULL::numeric as bundle_quantity
+        FROM public.mixed_bundles mb
+        WHERE mb.id = product_id
+        AND mb.status = 'active'
+        AND (mb.end_date IS NULL OR mb.end_date >= target_date)
+        AND mb.start_date <= target_date;
 
-        -- If no price found, return 0
+        -- If no bundle found, return 0
         IF NOT FOUND THEN
-            RAISE NOTICE 'No price found, returning 0';
-            RETURN QUERY
-            SELECT 
-                0::numeric(10,2) as price,
-                'none'::text as price_type;
+            RETURN QUERY SELECT 
+                0::numeric as price,
+                'none'::text as price_type,
+                NULL::uuid as bundle_id,
+                NULL::numeric as bundle_quantity;
+        END IF;
+    ELSE
+        -- Check if there's a single-product bundle for this product
+        SELECT 
+            mb.id as bundle_id,
+            mb.total_price as bundle_price,
+            mbi.quantity as bundle_quantity
+        INTO v_bundle_record
+        FROM public.mixed_bundles mb
+        JOIN public.mixed_bundle_items mbi ON mb.id = mbi.bundle_id
+        WHERE mbi.product_id = get_product_price_at_date.product_id
+        AND mb.status = 'active'
+        AND (mb.end_date IS NULL OR mb.end_date >= target_date)
+        AND mb.start_date <= target_date
+        AND EXISTS (
+            SELECT 1 FROM public.mixed_bundle_items mbi2
+            WHERE mbi2.bundle_id = mb.id
+            GROUP BY mbi2.bundle_id
+            HAVING COUNT(*) = 1
+        )
+        ORDER BY mbi.quantity ASC
+        LIMIT 1;
+
+        IF v_bundle_record IS NOT NULL THEN
+            -- Return the bundle-based unit price
+            RETURN QUERY SELECT 
+                (v_bundle_record.bundle_price / v_bundle_record.bundle_quantity) as price,
+                'bundle_unit'::text as price_type,
+                v_bundle_record.bundle_id as bundle_id,
+                v_bundle_record.bundle_quantity as bundle_quantity;
+        ELSE
+            -- For regular products without bundles, get quantity-based price
+            SELECT pp.price INTO v_quantity_price
+            FROM public.product_prices pp
+            WHERE pp.product_id = get_product_price_at_date.product_id
+            AND pp.start_date <= target_date
+            AND (pp.end_date IS NULL OR pp.end_date >= target_date)
+            AND pp.min_quantity <= 1  -- Default to quantity 1
+            AND (pp.max_quantity IS NULL OR pp.max_quantity >= 1)
+            ORDER BY pp.min_quantity DESC, pp.start_date DESC
+            LIMIT 1;
+
+            -- If no quantity-based price found, get the base price (min_quantity = 1)
+            IF v_quantity_price IS NULL THEN
+                RETURN QUERY 
+                SELECT 
+                    pp.price as price,
+                    'regular'::text as price_type,
+                    NULL::uuid as bundle_id,
+                    NULL::numeric as bundle_quantity
+                FROM public.product_prices pp
+                WHERE pp.product_id = get_product_price_at_date.product_id
+                AND pp.start_date <= target_date
+                AND (pp.end_date IS NULL OR pp.end_date >= target_date)
+                AND pp.min_quantity = 1
+                ORDER BY pp.start_date DESC
+                LIMIT 1;
+
+                -- If no price found at all, return 0
+                IF NOT FOUND THEN
+                    RETURN QUERY SELECT 
+                        0::numeric as price,
+                        'none'::text as price_type,
+                        NULL::uuid as bundle_id,
+                        NULL::numeric as bundle_quantity;
+                END IF;
+            ELSE
+                RETURN QUERY SELECT 
+                    v_quantity_price as price,
+                    'quantity_based'::text as price_type,
+                    NULL::uuid as bundle_id,
+                    NULL::numeric as bundle_quantity;
+            END IF;
         END IF;
     END IF;
+END;
+$$;
+
+
+--
+-- Name: get_quantity_based_price(uuid, numeric); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.get_quantity_based_price(p_product_id uuid, p_quantity numeric) RETURNS numeric
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    v_price numeric;
+BEGIN
+    SELECT price INTO v_price
+    FROM public.product_prices
+    WHERE product_id = p_product_id
+        AND min_quantity <= p_quantity
+        AND (max_quantity IS NULL OR max_quantity >= p_quantity)
+        AND (end_date IS NULL OR end_date >= CURRENT_DATE)
+    ORDER BY min_quantity DESC
+    LIMIT 1;
+
+    RETURN COALESCE(v_price, (
+        SELECT price 
+        FROM public.product_prices 
+        WHERE product_id = p_product_id 
+        AND min_quantity = 1
+        AND (end_date IS NULL OR end_date >= CURRENT_DATE)
+        ORDER BY start_date DESC 
+        LIMIT 1
+    ));
 END;
 $$;
 
@@ -1037,6 +1118,20 @@ BEGIN
         NOW(),
         NOW()
     );
+END;
+$$;
+
+
+--
+-- Name: update_updated_at_column(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.update_updated_at_column() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    NEW.updated_at = CURRENT_TIMESTAMP;
+    RETURN NEW;
 END;
 $$;
 
@@ -1623,7 +1718,7 @@ BEGIN
     AND c.relname = partition_name
   ) THEN
     EXECUTE format(
-      'CREATE TABLE %I PARTITION OF realtime.messages FOR VALUES FROM (%L) TO (%L)',
+      'CREATE TABLE realtime.%I PARTITION OF realtime.messages FOR VALUES FROM (%L) TO (%L)',
       partition_name,
       NOW(),
       (NOW() + interval '1 day')::timestamp
@@ -2545,6 +2640,39 @@ CREATE TABLE public.clients (
 
 
 --
+-- Name: mixed_bundle_items; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.mixed_bundle_items (
+    id uuid DEFAULT extensions.uuid_generate_v4() NOT NULL,
+    bundle_id uuid NOT NULL,
+    product_id uuid NOT NULL,
+    quantity numeric(10,2) NOT NULL,
+    created_at timestamp with time zone DEFAULT timezone('utc'::text, now()) NOT NULL,
+    CONSTRAINT positive_quantity CHECK ((quantity > (0)::numeric))
+);
+
+
+--
+-- Name: mixed_bundles; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.mixed_bundles (
+    id uuid DEFAULT extensions.uuid_generate_v4() NOT NULL,
+    name text NOT NULL,
+    description text,
+    total_price numeric(10,2) NOT NULL,
+    status text DEFAULT 'active'::text NOT NULL,
+    created_at timestamp with time zone DEFAULT timezone('utc'::text, now()) NOT NULL,
+    updated_at timestamp with time zone DEFAULT timezone('utc'::text, now()) NOT NULL,
+    created_by uuid,
+    updated_by uuid,
+    start_date date DEFAULT CURRENT_DATE NOT NULL,
+    end_date date
+);
+
+
+--
 -- Name: neighborhoods; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -2599,7 +2727,10 @@ CREATE TABLE public.product_prices (
     created_by uuid,
     updated_by uuid,
     start_date date DEFAULT CURRENT_DATE NOT NULL,
-    end_date date
+    end_date date,
+    min_quantity integer DEFAULT 1 NOT NULL,
+    max_quantity integer,
+    CONSTRAINT valid_quantity_range CHECK (((max_quantity IS NULL) OR ((min_quantity < max_quantity) AND (min_quantity > 0))))
 );
 
 
@@ -3081,6 +3212,36 @@ COPY auth.audit_log_entries (instance_id, id, payload, created_at, ip_address) F
 00000000-0000-0000-0000-000000000000	085c1bb0-5e8f-430d-bde3-271ed08186e8	{"action":"token_revoked","actor_id":"36837910-176b-48b8-9a49-e2bc08431bd9","actor_username":"nicocostac+nevados@gmail.com","actor_via_sso":false,"log_type":"token"}	2024-11-22 02:53:53.750391+00	
 00000000-0000-0000-0000-000000000000	ca48d4e2-4750-46c8-ad69-6174c63562f2	{"action":"token_refreshed","actor_id":"36837910-176b-48b8-9a49-e2bc08431bd9","actor_username":"nicocostac+nevados@gmail.com","actor_via_sso":false,"log_type":"token"}	2024-11-22 03:52:05.151589+00	
 00000000-0000-0000-0000-000000000000	e9a97e09-3307-46f2-8d43-c893b26c1214	{"action":"token_revoked","actor_id":"36837910-176b-48b8-9a49-e2bc08431bd9","actor_username":"nicocostac+nevados@gmail.com","actor_via_sso":false,"log_type":"token"}	2024-11-22 03:52:05.152945+00	
+00000000-0000-0000-0000-000000000000	4ea402b7-e7bd-41e6-a0da-df3acd153b94	{"action":"login","actor_id":"36837910-176b-48b8-9a49-e2bc08431bd9","actor_username":"nicocostac+nevados@gmail.com","actor_via_sso":false,"log_type":"account","traits":{"provider":"email"}}	2024-11-22 04:39:38.237239+00	
+00000000-0000-0000-0000-000000000000	9483a579-f8c5-47e4-baca-590ff68ae4e9	{"action":"token_refreshed","actor_id":"36837910-176b-48b8-9a49-e2bc08431bd9","actor_username":"nicocostac+nevados@gmail.com","actor_via_sso":false,"log_type":"token"}	2024-11-22 04:50:06.484462+00	
+00000000-0000-0000-0000-000000000000	a3b4328d-3f03-4403-91cd-c9c89bf4cad2	{"action":"token_revoked","actor_id":"36837910-176b-48b8-9a49-e2bc08431bd9","actor_username":"nicocostac+nevados@gmail.com","actor_via_sso":false,"log_type":"token"}	2024-11-22 04:50:06.485409+00	
+00000000-0000-0000-0000-000000000000	751c0256-7043-46df-a06b-2d9da9de1390	{"action":"token_refreshed","actor_id":"36837910-176b-48b8-9a49-e2bc08431bd9","actor_username":"nicocostac+nevados@gmail.com","actor_via_sso":false,"log_type":"token"}	2024-11-22 15:51:10.733021+00	
+00000000-0000-0000-0000-000000000000	0176f608-024e-4bf6-be58-d2e5cd883b6f	{"action":"token_revoked","actor_id":"36837910-176b-48b8-9a49-e2bc08431bd9","actor_username":"nicocostac+nevados@gmail.com","actor_via_sso":false,"log_type":"token"}	2024-11-22 15:51:10.754663+00	
+00000000-0000-0000-0000-000000000000	660827c0-cfb4-472d-9cb4-81215a5c019d	{"action":"token_refreshed","actor_id":"36837910-176b-48b8-9a49-e2bc08431bd9","actor_username":"nicocostac+nevados@gmail.com","actor_via_sso":false,"log_type":"token"}	2024-11-22 16:49:30.263695+00	
+00000000-0000-0000-0000-000000000000	208dab80-8662-4f94-a2ef-c208fbbe012b	{"action":"token_revoked","actor_id":"36837910-176b-48b8-9a49-e2bc08431bd9","actor_username":"nicocostac+nevados@gmail.com","actor_via_sso":false,"log_type":"token"}	2024-11-22 16:49:30.265084+00	
+00000000-0000-0000-0000-000000000000	6fe4cc27-694e-410a-9302-28c3ed7c8a1f	{"action":"token_refreshed","actor_id":"36837910-176b-48b8-9a49-e2bc08431bd9","actor_username":"nicocostac+nevados@gmail.com","actor_via_sso":false,"log_type":"token"}	2024-11-22 17:47:33.842814+00	
+00000000-0000-0000-0000-000000000000	eed641c0-0b4e-4aa2-ac40-df624e6b087a	{"action":"token_revoked","actor_id":"36837910-176b-48b8-9a49-e2bc08431bd9","actor_username":"nicocostac+nevados@gmail.com","actor_via_sso":false,"log_type":"token"}	2024-11-22 17:47:33.844837+00	
+00000000-0000-0000-0000-000000000000	465120c5-8025-4bf2-9a78-313bbf2da1dd	{"action":"token_refreshed","actor_id":"36837910-176b-48b8-9a49-e2bc08431bd9","actor_username":"nicocostac+nevados@gmail.com","actor_via_sso":false,"log_type":"token"}	2024-11-22 18:45:54.807301+00	
+00000000-0000-0000-0000-000000000000	cd509ce2-21c3-469f-9aec-c9524e4f8756	{"action":"token_revoked","actor_id":"36837910-176b-48b8-9a49-e2bc08431bd9","actor_username":"nicocostac+nevados@gmail.com","actor_via_sso":false,"log_type":"token"}	2024-11-22 18:45:54.809366+00	
+00000000-0000-0000-0000-000000000000	12bc9329-2810-43b0-96d0-f2c9459c4922	{"action":"token_refreshed","actor_id":"36837910-176b-48b8-9a49-e2bc08431bd9","actor_username":"nicocostac+nevados@gmail.com","actor_via_sso":false,"log_type":"token"}	2024-11-22 21:26:30.918608+00	
+00000000-0000-0000-0000-000000000000	b710515d-7425-4d9b-b60d-474b8063c48d	{"action":"token_revoked","actor_id":"36837910-176b-48b8-9a49-e2bc08431bd9","actor_username":"nicocostac+nevados@gmail.com","actor_via_sso":false,"log_type":"token"}	2024-11-22 21:26:30.921104+00	
+00000000-0000-0000-0000-000000000000	95931de0-9235-4e62-a319-da0d215e7cf6	{"action":"token_refreshed","actor_id":"36837910-176b-48b8-9a49-e2bc08431bd9","actor_username":"nicocostac+nevados@gmail.com","actor_via_sso":false,"log_type":"token"}	2024-11-22 22:24:31.036099+00	
+00000000-0000-0000-0000-000000000000	4c0b7591-d0ca-4eed-9122-8ab8e77b409c	{"action":"token_revoked","actor_id":"36837910-176b-48b8-9a49-e2bc08431bd9","actor_username":"nicocostac+nevados@gmail.com","actor_via_sso":false,"log_type":"token"}	2024-11-22 22:24:31.038984+00	
+00000000-0000-0000-0000-000000000000	e8704e37-dfaf-4061-8e35-3a59b2176f71	{"action":"token_refreshed","actor_id":"36837910-176b-48b8-9a49-e2bc08431bd9","actor_username":"nicocostac+nevados@gmail.com","actor_via_sso":false,"log_type":"token"}	2024-11-22 23:22:53.862312+00	
+00000000-0000-0000-0000-000000000000	69a7a3bd-a4f2-40fd-9035-8f0f6b6e27d1	{"action":"token_revoked","actor_id":"36837910-176b-48b8-9a49-e2bc08431bd9","actor_username":"nicocostac+nevados@gmail.com","actor_via_sso":false,"log_type":"token"}	2024-11-22 23:22:53.86416+00	
+00000000-0000-0000-0000-000000000000	fd0b366c-8827-4db2-9de1-822df66c4443	{"action":"token_refreshed","actor_id":"36837910-176b-48b8-9a49-e2bc08431bd9","actor_username":"nicocostac+nevados@gmail.com","actor_via_sso":false,"log_type":"token"}	2024-11-25 15:05:14.668451+00	
+00000000-0000-0000-0000-000000000000	f8702c87-518b-4ae7-8fc6-6d482b5b73fb	{"action":"token_revoked","actor_id":"36837910-176b-48b8-9a49-e2bc08431bd9","actor_username":"nicocostac+nevados@gmail.com","actor_via_sso":false,"log_type":"token"}	2024-11-25 15:05:14.684316+00	
+00000000-0000-0000-0000-000000000000	5f59ec18-6f79-4293-84f1-5f9c65a4ce00	{"action":"token_refreshed","actor_id":"36837910-176b-48b8-9a49-e2bc08431bd9","actor_username":"nicocostac+nevados@gmail.com","actor_via_sso":false,"log_type":"token"}	2024-11-25 16:05:20.446363+00	
+00000000-0000-0000-0000-000000000000	c9dc20cd-8727-45f1-8189-85c534af8e24	{"action":"token_revoked","actor_id":"36837910-176b-48b8-9a49-e2bc08431bd9","actor_username":"nicocostac+nevados@gmail.com","actor_via_sso":false,"log_type":"token"}	2024-11-25 16:05:20.451652+00	
+00000000-0000-0000-0000-000000000000	79c5f68e-0d01-461f-b90f-5ae4a2add95e	{"action":"login","actor_id":"36837910-176b-48b8-9a49-e2bc08431bd9","actor_username":"nicocostac+nevados@gmail.com","actor_via_sso":false,"log_type":"account","traits":{"provider":"email"}}	2024-12-06 18:57:55.27472+00	
+00000000-0000-0000-0000-000000000000	6560e4a2-079d-4889-9283-25a64e60153d	{"action":"token_refreshed","actor_id":"36837910-176b-48b8-9a49-e2bc08431bd9","actor_username":"nicocostac+nevados@gmail.com","actor_via_sso":false,"log_type":"token"}	2024-12-09 13:40:16.13557+00	
+00000000-0000-0000-0000-000000000000	d89eec53-4f0b-419c-8a0f-2cce19da2fd9	{"action":"token_revoked","actor_id":"36837910-176b-48b8-9a49-e2bc08431bd9","actor_username":"nicocostac+nevados@gmail.com","actor_via_sso":false,"log_type":"token"}	2024-12-09 13:40:16.148352+00	
+00000000-0000-0000-0000-000000000000	482090fb-e762-4ff7-b828-9a492f0275c7	{"action":"token_refreshed","actor_id":"36837910-176b-48b8-9a49-e2bc08431bd9","actor_username":"nicocostac+nevados@gmail.com","actor_via_sso":false,"log_type":"token"}	2024-12-09 14:40:20.366612+00	
+00000000-0000-0000-0000-000000000000	a98576d6-e6d5-45b3-b429-fa031436d836	{"action":"token_revoked","actor_id":"36837910-176b-48b8-9a49-e2bc08431bd9","actor_username":"nicocostac+nevados@gmail.com","actor_via_sso":false,"log_type":"token"}	2024-12-09 14:40:20.370473+00	
+00000000-0000-0000-0000-000000000000	7f30c2bd-8f29-4827-b562-15d518143ee0	{"action":"token_refreshed","actor_id":"36837910-176b-48b8-9a49-e2bc08431bd9","actor_username":"nicocostac+nevados@gmail.com","actor_via_sso":false,"log_type":"token"}	2024-12-09 15:53:23.618085+00	
+00000000-0000-0000-0000-000000000000	d8fd3e4a-8efd-46f2-b6fc-8ea6dff1b191	{"action":"token_revoked","actor_id":"36837910-176b-48b8-9a49-e2bc08431bd9","actor_username":"nicocostac+nevados@gmail.com","actor_via_sso":false,"log_type":"token"}	2024-12-09 15:53:23.622136+00	
+00000000-0000-0000-0000-000000000000	f1b1c76c-881e-4a53-9492-68b8a339623a	{"action":"token_refreshed","actor_id":"36837910-176b-48b8-9a49-e2bc08431bd9","actor_username":"nicocostac+nevados@gmail.com","actor_via_sso":false,"log_type":"token"}	2024-12-09 16:51:26.240496+00	
+00000000-0000-0000-0000-000000000000	bda8e6ef-f843-41fe-8a55-eade7740366e	{"action":"token_revoked","actor_id":"36837910-176b-48b8-9a49-e2bc08431bd9","actor_username":"nicocostac+nevados@gmail.com","actor_via_sso":false,"log_type":"token"}	2024-12-09 16:51:26.24378+00	
 \.
 
 
@@ -3118,6 +3279,8 @@ COPY auth.mfa_amr_claims (session_id, created_at, updated_at, authentication_met
 78382f47-5b8d-4d73-80ab-55bf82b2e30c	2024-11-19 16:33:43.721942+00	2024-11-19 16:33:43.721942+00	password	e7356341-ba78-460c-bde7-5899da155da4
 6fb858d0-e4de-4622-847f-a730665ee4ff	2024-11-19 16:36:13.107988+00	2024-11-19 16:36:13.107988+00	password	3864ac5c-8ac6-4ffe-a4d9-ebe15d9f9a2e
 04a70cd0-dbae-44a5-9d2c-a566d9aa5c3b	2024-11-19 16:45:15.004861+00	2024-11-19 16:45:15.004861+00	password	cee73b14-59a8-459d-b063-44a1191949a9
+d57ce5bf-6ae1-4cab-ad62-d3f360bd0796	2024-11-22 04:39:38.245243+00	2024-11-22 04:39:38.245243+00	password	4480a62a-7eb3-41e0-8213-d03dae679b6e
+db09d6bd-540b-4c85-8968-a610d88dbe23	2024-12-06 18:57:55.307831+00	2024-12-06 18:57:55.307831+00	password	9fd4c34a-29d2-454e-b04c-7b96dde2a7ca
 \.
 
 
@@ -3170,7 +3333,23 @@ COPY auth.refresh_tokens (instance_id, id, token, user_id, revoked, created_at, 
 00000000-0000-0000-0000-000000000000	106	xgmzWotOywa-gPsLwO01Kw	36837910-176b-48b8-9a49-e2bc08431bd9	t	2024-11-22 00:57:16.249259+00	2024-11-22 01:55:38.749019+00	f0qJOQTHkyfUyvuAK8t2Hg	04a70cd0-dbae-44a5-9d2c-a566d9aa5c3b
 00000000-0000-0000-0000-000000000000	107	ZMif9fcI0Jbwz8emXIUQDA	36837910-176b-48b8-9a49-e2bc08431bd9	t	2024-11-22 01:55:38.750131+00	2024-11-22 02:53:53.750905+00	xgmzWotOywa-gPsLwO01Kw	04a70cd0-dbae-44a5-9d2c-a566d9aa5c3b
 00000000-0000-0000-0000-000000000000	108	Mc1bsI3j9HihHHAezGuYSQ	36837910-176b-48b8-9a49-e2bc08431bd9	t	2024-11-22 02:53:53.752051+00	2024-11-22 03:52:05.153428+00	ZMif9fcI0Jbwz8emXIUQDA	04a70cd0-dbae-44a5-9d2c-a566d9aa5c3b
-00000000-0000-0000-0000-000000000000	109	9-JXROVYwxxYDAxJP7Waig	36837910-176b-48b8-9a49-e2bc08431bd9	f	2024-11-22 03:52:05.154804+00	2024-11-22 03:52:05.154804+00	Mc1bsI3j9HihHHAezGuYSQ	04a70cd0-dbae-44a5-9d2c-a566d9aa5c3b
+00000000-0000-0000-0000-000000000000	110	6sAXHFIcFU4VnuHFLf_afQ	36837910-176b-48b8-9a49-e2bc08431bd9	f	2024-11-22 04:39:38.24265+00	2024-11-22 04:39:38.24265+00	\N	d57ce5bf-6ae1-4cab-ad62-d3f360bd0796
+00000000-0000-0000-0000-000000000000	109	9-JXROVYwxxYDAxJP7Waig	36837910-176b-48b8-9a49-e2bc08431bd9	t	2024-11-22 03:52:05.154804+00	2024-11-22 04:50:06.485924+00	Mc1bsI3j9HihHHAezGuYSQ	04a70cd0-dbae-44a5-9d2c-a566d9aa5c3b
+00000000-0000-0000-0000-000000000000	111	0y7KjsUW5pg5pu7GyAulSQ	36837910-176b-48b8-9a49-e2bc08431bd9	t	2024-11-22 04:50:06.486525+00	2024-11-22 15:51:10.756507+00	9-JXROVYwxxYDAxJP7Waig	04a70cd0-dbae-44a5-9d2c-a566d9aa5c3b
+00000000-0000-0000-0000-000000000000	112	ogYMxoXJb57ABp_nGXnqhQ	36837910-176b-48b8-9a49-e2bc08431bd9	t	2024-11-22 15:51:10.769053+00	2024-11-22 16:49:30.265654+00	0y7KjsUW5pg5pu7GyAulSQ	04a70cd0-dbae-44a5-9d2c-a566d9aa5c3b
+00000000-0000-0000-0000-000000000000	113	KW9qhKj2zSLXXCD3HE3XCw	36837910-176b-48b8-9a49-e2bc08431bd9	t	2024-11-22 16:49:30.26759+00	2024-11-22 17:47:33.845341+00	ogYMxoXJb57ABp_nGXnqhQ	04a70cd0-dbae-44a5-9d2c-a566d9aa5c3b
+00000000-0000-0000-0000-000000000000	114	muNOzkW0peJYdAfLd--9IQ	36837910-176b-48b8-9a49-e2bc08431bd9	t	2024-11-22 17:47:33.847286+00	2024-11-22 18:45:54.809906+00	KW9qhKj2zSLXXCD3HE3XCw	04a70cd0-dbae-44a5-9d2c-a566d9aa5c3b
+00000000-0000-0000-0000-000000000000	115	yetU_5Yex816bH7k76cgYQ	36837910-176b-48b8-9a49-e2bc08431bd9	t	2024-11-22 18:45:54.812198+00	2024-11-22 21:26:30.921589+00	muNOzkW0peJYdAfLd--9IQ	04a70cd0-dbae-44a5-9d2c-a566d9aa5c3b
+00000000-0000-0000-0000-000000000000	116	YiegC11FlCyPTYU0pKYhnQ	36837910-176b-48b8-9a49-e2bc08431bd9	t	2024-11-22 21:26:30.923914+00	2024-11-22 22:24:31.039582+00	yetU_5Yex816bH7k76cgYQ	04a70cd0-dbae-44a5-9d2c-a566d9aa5c3b
+00000000-0000-0000-0000-000000000000	117	YI_kVDBxekU2g-Y96oCunw	36837910-176b-48b8-9a49-e2bc08431bd9	t	2024-11-22 22:24:31.041975+00	2024-11-22 23:22:53.86465+00	YiegC11FlCyPTYU0pKYhnQ	04a70cd0-dbae-44a5-9d2c-a566d9aa5c3b
+00000000-0000-0000-0000-000000000000	118	N_ftcnvOo-0Qwst_Zdh1eg	36837910-176b-48b8-9a49-e2bc08431bd9	t	2024-11-22 23:22:53.866134+00	2024-11-25 15:05:14.68494+00	YI_kVDBxekU2g-Y96oCunw	04a70cd0-dbae-44a5-9d2c-a566d9aa5c3b
+00000000-0000-0000-0000-000000000000	119	cvXtYJ_LDIKhtVnkP5_i5Q	36837910-176b-48b8-9a49-e2bc08431bd9	t	2024-11-25 15:05:14.692644+00	2024-11-25 16:05:20.452201+00	N_ftcnvOo-0Qwst_Zdh1eg	04a70cd0-dbae-44a5-9d2c-a566d9aa5c3b
+00000000-0000-0000-0000-000000000000	120	1AYV3EpUIic_XaVfugWYjg	36837910-176b-48b8-9a49-e2bc08431bd9	f	2024-11-25 16:05:20.457316+00	2024-11-25 16:05:20.457316+00	cvXtYJ_LDIKhtVnkP5_i5Q	04a70cd0-dbae-44a5-9d2c-a566d9aa5c3b
+00000000-0000-0000-0000-000000000000	121	ij0vxKAqY3s61kRzqMPUtg	36837910-176b-48b8-9a49-e2bc08431bd9	t	2024-12-06 18:57:55.289776+00	2024-12-09 13:40:16.149638+00	\N	db09d6bd-540b-4c85-8968-a610d88dbe23
+00000000-0000-0000-0000-000000000000	122	oPiqjbuXysY9j9owcBfTKQ	36837910-176b-48b8-9a49-e2bc08431bd9	t	2024-12-09 13:40:16.160408+00	2024-12-09 14:40:20.370963+00	ij0vxKAqY3s61kRzqMPUtg	db09d6bd-540b-4c85-8968-a610d88dbe23
+00000000-0000-0000-0000-000000000000	123	PDbsmL0uNn0Y3sLP4DQW2g	36837910-176b-48b8-9a49-e2bc08431bd9	t	2024-12-09 14:40:20.372543+00	2024-12-09 15:53:23.623164+00	oPiqjbuXysY9j9owcBfTKQ	db09d6bd-540b-4c85-8968-a610d88dbe23
+00000000-0000-0000-0000-000000000000	124	6_VpSfa0zrmlT5Le2ieA5g	36837910-176b-48b8-9a49-e2bc08431bd9	t	2024-12-09 15:53:23.624314+00	2024-12-09 16:51:26.244349+00	PDbsmL0uNn0Y3sLP4DQW2g	db09d6bd-540b-4c85-8968-a610d88dbe23
+00000000-0000-0000-0000-000000000000	125	Kpai9yJ1md7bogeUfwxyZA	36837910-176b-48b8-9a49-e2bc08431bd9	f	2024-12-09 16:51:26.245744+00	2024-12-09 16:51:26.245744+00	6_VpSfa0zrmlT5Le2ieA5g	db09d6bd-540b-4c85-8968-a610d88dbe23
 \.
 
 
@@ -3266,7 +3445,9 @@ COPY auth.schema_migrations (version) FROM stdin;
 COPY auth.sessions (id, user_id, created_at, updated_at, factor_id, aal, not_after, refreshed_at, user_agent, ip, tag) FROM stdin;
 78382f47-5b8d-4d73-80ab-55bf82b2e30c	36837910-176b-48b8-9a49-e2bc08431bd9	2024-11-19 16:33:43.719537+00	2024-11-19 16:33:43.719537+00	\N	aal1	\N	\N	Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Safari/605.1.15	104.28.47.230	\N
 6fb858d0-e4de-4622-847f-a730665ee4ff	36837910-176b-48b8-9a49-e2bc08431bd9	2024-11-19 16:36:13.103975+00	2024-11-19 16:36:13.103975+00	\N	aal1	\N	\N	Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Safari/605.1.15	104.28.47.230	\N
-04a70cd0-dbae-44a5-9d2c-a566d9aa5c3b	36837910-176b-48b8-9a49-e2bc08431bd9	2024-11-19 16:45:15.00192+00	2024-11-22 03:52:05.157098+00	\N	aal1	\N	2024-11-22 03:52:05.157029	Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Safari/605.1.15	104.28.47.230	\N
+04a70cd0-dbae-44a5-9d2c-a566d9aa5c3b	36837910-176b-48b8-9a49-e2bc08431bd9	2024-11-19 16:45:15.00192+00	2024-11-25 16:05:20.46177+00	\N	aal1	\N	2024-11-25 16:05:20.4617	Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Safari/605.1.15	146.75.208.29	\N
+d57ce5bf-6ae1-4cab-ad62-d3f360bd0796	36837910-176b-48b8-9a49-e2bc08431bd9	2024-11-22 04:39:38.239729+00	2024-11-22 04:39:38.239729+00	\N	aal1	\N	\N	Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Safari/605.1.15	172.225.84.100	\N
+db09d6bd-540b-4c85-8968-a610d88dbe23	36837910-176b-48b8-9a49-e2bc08431bd9	2024-12-06 18:57:55.284277+00	2024-12-09 16:51:26.249044+00	\N	aal1	\N	2024-12-09 16:51:26.248963	Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Safari/605.1.15	172.225.84.154	\N
 \.
 
 
@@ -3292,7 +3473,7 @@ COPY auth.sso_providers (id, resource_id, created_at, updated_at) FROM stdin;
 
 COPY auth.users (instance_id, id, aud, role, email, encrypted_password, email_confirmed_at, invited_at, confirmation_token, confirmation_sent_at, recovery_token, recovery_sent_at, email_change_token_new, email_change, email_change_sent_at, last_sign_in_at, raw_app_meta_data, raw_user_meta_data, is_super_admin, created_at, updated_at, phone, phone_confirmed_at, phone_change, phone_change_token, phone_change_sent_at, email_change_token_current, email_change_confirm_status, banned_until, reauthentication_token, reauthentication_sent_at, is_sso_user, deleted_at, is_anonymous) FROM stdin;
 00000000-0000-0000-0000-000000000000	dc1406e9-fcd3-40e2-b960-152af5211b8b	authenticated	authenticated	nicocostac@gmail.com	$2a$10$iKZlMebIC.i4U1PSCRV4TOS2mILqTz32LeEAmH9HWWjYfxj/oOajS	2024-11-05 23:00:45.204697+00	\N		\N		\N			\N	2024-11-07 22:04:59.56634+00	{"provider": "email", "providers": ["email"]}	{"sub": "dc1406e9-fcd3-40e2-b960-152af5211b8b", "email": "nicocostac@gmail.com", "last_name": "asdasd", "first_name": "asdasd", "email_verified": false, "phone_verified": false}	\N	2024-11-05 22:59:10.30863+00	2024-11-07 22:04:59.568722+00	\N	\N			\N		0	\N		\N	f	\N	f
-00000000-0000-0000-0000-000000000000	36837910-176b-48b8-9a49-e2bc08431bd9	authenticated	authenticated	nicocostac+nevados@gmail.com	$2a$10$uaUKe9lknKJHbgLUMp8GOOqS3KPLEa9vNrnz/3HQr3cUBWuMUg/cu	2024-11-05 20:23:34.236033+00	\N		\N		\N			\N	2024-11-19 16:45:15.001843+00	{"provider": "email", "providers": ["email"]}	{"sub": "36837910-176b-48b8-9a49-e2bc08431bd9", "email": "nicocostac+nevados@gmail.com", "email_verified": false, "phone_verified": false}	\N	2024-11-05 20:23:16.594568+00	2024-11-22 03:52:05.155866+00	\N	\N			\N		0	\N		\N	f	\N	f
+00000000-0000-0000-0000-000000000000	36837910-176b-48b8-9a49-e2bc08431bd9	authenticated	authenticated	nicocostac+nevados@gmail.com	$2a$10$uaUKe9lknKJHbgLUMp8GOOqS3KPLEa9vNrnz/3HQr3cUBWuMUg/cu	2024-11-05 20:23:34.236033+00	\N		\N		\N			\N	2024-12-06 18:57:55.283711+00	{"provider": "email", "providers": ["email"]}	{"sub": "36837910-176b-48b8-9a49-e2bc08431bd9", "email": "nicocostac+nevados@gmail.com", "email_verified": false, "phone_verified": false}	\N	2024-11-05 20:23:16.594568+00	2024-12-09 16:51:26.246759+00	\N	\N			\N		0	\N		\N	f	\N	f
 \.
 
 
@@ -3312,6 +3493,10 @@ COPY public.boroughs (id, name, status, created_at, updated_at) FROM stdin;
 1bd0af9e-f376-48ea-999d-5858cb39f9e8	Peñaflor	active	2024-11-07 22:43:37.905653+00	2024-11-07 22:43:37.905653+00
 96d99b1a-95fe-45f5-9c8f-d5d7439912a0	Maipu	active	2024-11-07 22:43:55.469932+00	2024-11-07 22:43:55.469932+00
 3280cf14-245d-4562-a16a-9afed9dad934	Talagantee	inactive	2024-11-07 22:45:17.127026+00	2024-11-07 22:45:29.398018+00
+4bf42445-430d-4f23-928e-8a83e69ca9c9	Talagante	active	2024-11-22 22:20:43.183979+00	2024-11-22 22:20:43.183979+00
+186604c8-a965-4bd0-852b-1055f4ef9209	Padre Hurtado	active	2024-11-22 22:21:22.156931+00	2024-11-22 22:21:22.156931+00
+be87ece8-a46d-430e-9e94-8abe40668575	Calera de Tango	active	2024-11-22 22:22:19.332046+00	2024-11-22 22:22:19.332046+00
+79948be8-4794-497d-bfb6-c7d6257ce912	Cerrillos	active	2024-11-22 22:23:44.302129+00	2024-11-22 22:23:44.302129+00
 \.
 
 
@@ -3355,12 +3540,39 @@ COPY public.clients (id, name, email, phone, notes, type_id, communication_prefe
 
 
 --
+-- Data for Name: mixed_bundle_items; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+COPY public.mixed_bundle_items (id, bundle_id, product_id, quantity, created_at) FROM stdin;
+8115f209-7c83-4c7f-a9de-c8caf16bf5a8	e7c246b8-5e6f-4fea-9848-d776c8c1cdd2	aa5fced8-b36c-4196-9bcf-a36bb2204cd3	2.00	2024-12-09 15:09:32.673374+00
+9c8a99db-be53-44a3-883f-cf4da206249d	1c081b11-f94a-4b88-8d79-98b1fe613cce	492d2aa4-2135-4a62-860b-ac541aa5717b	2.00	2024-12-09 15:09:40.632242+00
+53750dca-dd83-4279-9383-01467d1bec76	4076a6d8-ca49-4d78-91ea-d5f15736ac9e	aa5fced8-b36c-4196-9bcf-a36bb2204cd3	2.00	2024-12-09 15:28:41.239489+00
+3819a735-569e-4620-8303-fd9197f50dab	4076a6d8-ca49-4d78-91ea-d5f15736ac9e	fc03bf9b-d474-4e05-8796-1a002501e7c6	2.00	2024-12-09 15:28:41.239489+00
+81319c53-b804-4e6f-87e2-4c94ccfb4651	4076a6d8-ca49-4d78-91ea-d5f15736ac9e	71d896bf-921a-40aa-9e59-162c912ebf8d	1.00	2024-12-09 15:28:41.239489+00
+\.
+
+
+--
+-- Data for Name: mixed_bundles; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+COPY public.mixed_bundles (id, name, description, total_price, status, created_at, updated_at, created_by, updated_by, start_date, end_date) FROM stdin;
+e7c246b8-5e6f-4fea-9848-d776c8c1cdd2	2 Recargas de 20L		5000.00	active	2024-12-09 14:35:01.710765+00	2024-12-09 15:09:31.919259+00	\N	\N	2024-12-09	\N
+1c081b11-f94a-4b88-8d79-98b1fe613cce	2 Recargas de 10L		4000.00	active	2024-12-09 14:48:12.151735+00	2024-12-09 15:09:39.915536+00	\N	\N	2024-12-09	\N
+4076a6d8-ca49-4d78-91ea-d5f15736ac9e	Pack Inicial 	Pack Inicial para nuevos clientes	15000.00	active	2024-12-09 15:16:49.027932+00	2024-12-09 15:28:40.486522+00	\N	\N	2024-12-09	\N
+\.
+
+
+--
 -- Data for Name: neighborhoods; Type: TABLE DATA; Schema: public; Owner: -
 --
 
 COPY public.neighborhoods (id, name, borough_id, status, created_at, updated_at) FROM stdin;
 3f6f4f41-a358-41a6-8f30-676888e39fa9	Las Praderas	1bd0af9e-f376-48ea-999d-5858cb39f9e8	active	2024-11-07 22:43:46.575095+00	2024-11-07 22:43:46.575095+00
-84eac37e-b169-4ec1-959c-1e24f6d46c27	Ciudad Satelite	96d99b1a-95fe-45f5-9c8f-d5d7439912a0	active	2024-11-07 22:44:03.112244+00	2024-11-07 22:44:03.112244+00
+3cb885ba-6fba-4cc1-8c93-d43e74b289aa	Lonquén	4bf42445-430d-4f23-928e-8a83e69ca9c9	active	2024-11-22 22:20:57.369072+00	2024-11-22 22:20:57.369072+00
+84eac37e-b169-4ec1-959c-1e24f6d46c27	Ciudad Satélite	96d99b1a-95fe-45f5-9c8f-d5d7439912a0	active	2024-11-07 22:44:03.112244+00	2024-11-22 22:21:41.657322+00
+9101c473-d055-4d98-a03b-45927804b672	El Oliveto	4bf42445-430d-4f23-928e-8a83e69ca9c9	active	2024-11-22 22:23:04.718454+00	2024-11-22 22:23:04.718454+00
+fe8a2510-1eb0-4227-9f0a-f62e9fd1d69a	El Abrazo	96d99b1a-95fe-45f5-9c8f-d5d7439912a0	active	2024-11-22 22:24:15.978664+00	2024-11-22 22:24:15.978664+00
 \.
 
 
@@ -3382,6 +3594,7 @@ f4ee3668-57e1-4126-b64a-3fafe32201bc	Bank Transfer	Direct bank transfer	active	2
 
 COPY public.product_categories (id, name, description, created_at, updated_at) FROM stdin;
 0c40f723-5937-4987-91b3-392590138050	Recargas	Recargas de Agua	2024-11-05 23:19:44.20918+00	2024-11-05 23:19:44.20918+00
+f24af995-e915-4eba-b7df-cc4812ed18c8	Otros	Otros productos en venta	2024-11-22 21:53:03.811019+00	2024-11-22 21:53:16.141994+00
 \.
 
 
@@ -3389,12 +3602,20 @@ COPY public.product_categories (id, name, description, created_at, updated_at) F
 -- Data for Name: product_prices; Type: TABLE DATA; Schema: public; Owner: -
 --
 
-COPY public.product_prices (id, product_id, price, created_at, updated_at, created_by, updated_by, start_date, end_date) FROM stdin;
-c9c4f062-8d80-4ac9-a488-47430dc3c832	aa5fced8-b36c-4196-9bcf-a36bb2204cd3	3000.00	2024-11-22 03:06:32.603557+00	2024-11-22 03:06:51.471962+00	36837910-176b-48b8-9a49-e2bc08431bd9	36837910-176b-48b8-9a49-e2bc08431bd9	2025-02-01	\N
-2d1ee1f3-6b48-4ed9-a207-82bd7654bd23	aa5fced8-b36c-4196-9bcf-a36bb2204cd3	2500.00	2024-11-22 00:01:36.761615+00	2024-11-22 03:06:51.597621+00	36837910-176b-48b8-9a49-e2bc08431bd9	36837910-176b-48b8-9a49-e2bc08431bd9	2024-09-01	2025-01-31
-97837e96-35d0-4cfc-9000-ee76f0611872	aa5fced8-b36c-4196-9bcf-a36bb2204cd3	2000.00	2024-11-22 00:01:19.556044+00	2024-11-22 03:06:51.715167+00	36837910-176b-48b8-9a49-e2bc08431bd9	36837910-176b-48b8-9a49-e2bc08431bd9	2024-01-01	2024-08-31
-4e107fe8-3edc-4c43-8833-abff0b10c5ec	492d2aa4-2135-4a62-860b-ac541aa5717b	2000.00	2024-11-22 02:27:58.395551+00	2024-11-22 03:07:49.941336+00	36837910-176b-48b8-9a49-e2bc08431bd9	36837910-176b-48b8-9a49-e2bc08431bd9	2024-09-01	\N
-50398440-e7f9-4bf2-bf07-b59067598819	492d2aa4-2135-4a62-860b-ac541aa5717b	1500.00	2024-11-22 02:40:54.865545+00	2024-11-22 03:07:50.086593+00	36837910-176b-48b8-9a49-e2bc08431bd9	36837910-176b-48b8-9a49-e2bc08431bd9	2024-01-01	2024-08-31
+COPY public.product_prices (id, product_id, price, created_at, updated_at, created_by, updated_by, start_date, end_date, min_quantity, max_quantity) FROM stdin;
+4e107fe8-3edc-4c43-8833-abff0b10c5ec	492d2aa4-2135-4a62-860b-ac541aa5717b	2000.00	2024-11-22 02:27:58.395551+00	2024-11-22 03:07:49.941336+00	36837910-176b-48b8-9a49-e2bc08431bd9	36837910-176b-48b8-9a49-e2bc08431bd9	2024-09-01	\N	1	\N
+50398440-e7f9-4bf2-bf07-b59067598819	492d2aa4-2135-4a62-860b-ac541aa5717b	1500.00	2024-11-22 02:40:54.865545+00	2024-11-22 03:07:50.086593+00	36837910-176b-48b8-9a49-e2bc08431bd9	36837910-176b-48b8-9a49-e2bc08431bd9	2024-01-01	2024-08-31	1	\N
+e403e4c2-4a49-4a40-9d19-7770a1bbdafd	\N	2000.00	2024-11-22 21:53:53.612173+00	2024-11-22 21:53:53.612173+00	36837910-176b-48b8-9a49-e2bc08431bd9	\N	2024-09-01	\N	1	\N
+e25c02b0-8ede-4eea-8c8d-8f1b4b08c813	a4db3fd2-3310-451c-80a3-f9a77761c295	2000.00	2024-11-22 21:54:23.870465+00	2024-11-22 21:55:43.603375+00	36837910-176b-48b8-9a49-e2bc08431bd9	36837910-176b-48b8-9a49-e2bc08431bd9	2024-09-01	\N	1	\N
+295f15fb-abe0-4174-b59e-419478ae70c8	08136a79-3396-4085-aee7-c9db9e2867af	2500.00	2024-11-22 21:56:53.799665+00	2024-11-22 21:56:55.782362+00	36837910-176b-48b8-9a49-e2bc08431bd9	36837910-176b-48b8-9a49-e2bc08431bd9	2024-09-01	\N	1	\N
+f9ed9e0f-098a-4343-be0d-e096d87584ba	fc03bf9b-d474-4e05-8796-1a002501e7c6	3500.00	2024-11-22 21:58:54.412852+00	2024-11-22 21:58:56.271169+00	36837910-176b-48b8-9a49-e2bc08431bd9	36837910-176b-48b8-9a49-e2bc08431bd9	2024-09-01	\N	1	\N
+3d9db4d2-d355-46eb-82f9-30386b1244d2	71d896bf-921a-40aa-9e59-162c912ebf8d	5000.00	2024-11-22 21:59:49.679652+00	2024-11-22 21:59:51.768154+00	36837910-176b-48b8-9a49-e2bc08431bd9	36837910-176b-48b8-9a49-e2bc08431bd9	2024-09-01	\N	1	\N
+562b8135-9b01-46b9-8107-467be84cc213	0b88e3e1-d05c-432f-bf3e-5ff147d56956	15000.00	2024-11-22 22:00:46.233221+00	2024-11-22 22:00:50.914208+00	36837910-176b-48b8-9a49-e2bc08431bd9	36837910-176b-48b8-9a49-e2bc08431bd9	2024-09-01	\N	1	\N
+5a5b4d95-f847-442d-bed7-85012bd204a8	2e2705bf-2d6e-4a9f-bbd2-6ead7ac804f9	30000.00	2024-11-22 22:02:46.560372+00	2024-11-22 22:02:48.622219+00	36837910-176b-48b8-9a49-e2bc08431bd9	36837910-176b-48b8-9a49-e2bc08431bd9	2024-09-01	\N	1	\N
+d65ebd3c-cfae-4988-8563-8e76a157360b	6e14cb92-1afe-4791-944d-dcdc54570f00	75000.00	2024-11-22 22:03:28.363187+00	2024-11-22 22:03:31.467287+00	36837910-176b-48b8-9a49-e2bc08431bd9	36837910-176b-48b8-9a49-e2bc08431bd9	2024-09-01	\N	1	\N
+581f9c3c-be81-43eb-8a25-948154845e56	6f2470ad-80ae-4131-a42f-9a509ca619fc	120000.00	2024-11-22 22:04:20.831031+00	2024-11-22 22:04:25.079308+00	36837910-176b-48b8-9a49-e2bc08431bd9	36837910-176b-48b8-9a49-e2bc08431bd9	2024-09-01	\N	1	\N
+2d1ee1f3-6b48-4ed9-a207-82bd7654bd23	aa5fced8-b36c-4196-9bcf-a36bb2204cd3	3500.00	2024-11-22 00:01:36.761615+00	2024-12-09 14:36:23.34628+00	36837910-176b-48b8-9a49-e2bc08431bd9	36837910-176b-48b8-9a49-e2bc08431bd9	2024-09-01	\N	1	\N
+97837e96-35d0-4cfc-9000-ee76f0611872	aa5fced8-b36c-4196-9bcf-a36bb2204cd3	3000.00	2024-11-22 00:01:19.556044+00	2024-12-09 14:36:23.461418+00	36837910-176b-48b8-9a49-e2bc08431bd9	36837910-176b-48b8-9a49-e2bc08431bd9	2024-01-01	2024-08-31	1	\N
 \.
 
 
@@ -3403,8 +3624,16 @@ c9c4f062-8d80-4ac9-a488-47430dc3c832	aa5fced8-b36c-4196-9bcf-a36bb2204cd3	3000.0
 --
 
 COPY public.products (id, name, description, unit_of_sale, category_id, status, created_at, updated_at) FROM stdin;
-aa5fced8-b36c-4196-9bcf-a36bb2204cd3	Recarga 20L	Recarga de 20L	unit	0c40f723-5937-4987-91b3-392590138050	active	2024-11-05 23:21:35.452476+00	2024-11-22 03:06:51.278431+00
 492d2aa4-2135-4a62-860b-ac541aa5717b	Recarga 10L	Recarga de 10L	unit	0c40f723-5937-4987-91b3-392590138050	active	2024-11-22 00:24:46.816861+00	2024-11-22 03:07:49.79532+00
+a4db3fd2-3310-451c-80a3-f9a77761c295	Recarga 12L	Recarga de 12L	unit	0c40f723-5937-4987-91b3-392590138050	active	2024-11-22 21:54:09.283075+00	2024-11-22 21:55:43.449442+00
+08136a79-3396-4085-aee7-c9db9e2867af	Bidón 10L	Bidón nuevo de 10L	unit	f24af995-e915-4eba-b7df-cc4812ed18c8	active	2024-11-22 21:56:34.073336+00	2024-11-22 21:56:55.593794+00
+fc03bf9b-d474-4e05-8796-1a002501e7c6	Bidón 20L	Bidón nuevo de 20L	unit	f24af995-e915-4eba-b7df-cc4812ed18c8	active	2024-11-22 21:58:35.702703+00	2024-11-22 21:58:56.060612+00
+71d896bf-921a-40aa-9e59-162c912ebf8d	Dispensador Básico	Dispensador de Agua Básico	unit	f24af995-e915-4eba-b7df-cc4812ed18c8	active	2024-11-22 21:59:33.601479+00	2024-11-22 21:59:51.573608+00
+0b88e3e1-d05c-432f-bf3e-5ff147d56956	Bomba USB	Bomba USB tipo monomando	unit	f24af995-e915-4eba-b7df-cc4812ed18c8	active	2024-11-22 22:00:29.204697+00	2024-11-22 22:00:50.70942+00
+2e2705bf-2d6e-4a9f-bbd2-6ead7ac804f9	Pack 50 botellas 500cc	50 botellas de 500cc	pack	f24af995-e915-4eba-b7df-cc4812ed18c8	active	2024-11-22 22:02:27.440678+00	2024-11-22 22:02:48.430404+00
+6e14cb92-1afe-4791-944d-dcdc54570f00	Dispensador eléctrico de sobre mesa		unit	f24af995-e915-4eba-b7df-cc4812ed18c8	active	2024-11-22 22:03:13.321383+00	2024-11-22 22:03:31.27403+00
+6f2470ad-80ae-4131-a42f-9a509ca619fc	Dispensador eléctrico de pedestal	Dispensador eléctrico de pedestal de ventilador	unit	f24af995-e915-4eba-b7df-cc4812ed18c8	active	2024-11-22 22:03:56.84286+00	2024-11-22 22:04:24.890731+00
+aa5fced8-b36c-4196-9bcf-a36bb2204cd3	Recarga 20L	Recarga de 20L	unit	0c40f723-5937-4987-91b3-392590138050	active	2024-11-05 23:21:35.452476+00	2024-12-09 14:36:23.199108+00
 \.
 
 
@@ -3423,10 +3652,11 @@ dc1406e9-fcd3-40e2-b960-152af5211b8b	2024-11-05 22:59:12.338718+00	2024-11-07 22
 --
 
 COPY public.sale_items (id, sale_id, product_id, item_number, quantity, unit_price, total_price, discount_percentage, notes, created_at) FROM stdin;
-4aab96b7-657d-4225-990b-7fd96b468c17	fb50dcc9-3e7d-498d-a4d1-da3f90a41460	aa5fced8-b36c-4196-9bcf-a36bb2204cd3	1	3.00	2000.00	6000.00	0.00	\N	2024-11-07 22:22:20.431841+00
-9818ec8f-caa9-4dae-92d7-6a4fc9c5d48d	fb50dcc9-3e7d-498d-a4d1-da3f90a41460	aa5fced8-b36c-4196-9bcf-a36bb2204cd3	2	1.00	2000.00	2000.00	0.00	\N	2024-11-19 16:54:26.918059+00
 cf60c3ca-8168-4c03-85bc-cb4ff80ef7bd	f608b6c7-cd23-4040-967d-019bcc41f4c2	aa5fced8-b36c-4196-9bcf-a36bb2204cd3	1	5.00	2000.00	10000.00	0.00	\N	2024-11-21 18:18:14.994002+00
 f601fd15-a50a-4fcd-bf92-4bec8aa8922c	f7bbbaa3-e659-4a79-9516-a12aa1823b10	492d2aa4-2135-4a62-860b-ac541aa5717b	1	4.00	1250.00	5000.00	0.00	\N	2024-11-22 04:12:02.73564+00
+232a79fe-68ee-488e-9089-b74327f5696d	f7bbbaa3-e659-4a79-9516-a12aa1823b10	aa5fced8-b36c-4196-9bcf-a36bb2204cd3	2	1.00	2500.00	2500.00	0.00	\N	2024-11-22 04:58:26.407052+00
+4aab96b7-657d-4225-990b-7fd96b468c17	fb50dcc9-3e7d-498d-a4d1-da3f90a41460	aa5fced8-b36c-4196-9bcf-a36bb2204cd3	1	3.00	2500.00	7500.00	0.00	\N	2024-11-07 22:22:20.431841+00
+9818ec8f-caa9-4dae-92d7-6a4fc9c5d48d	fb50dcc9-3e7d-498d-a4d1-da3f90a41460	aa5fced8-b36c-4196-9bcf-a36bb2204cd3	2	1.00	2500.00	2500.00	0.00	\N	2024-11-19 16:54:26.918059+00
 \.
 
 
@@ -3435,9 +3665,9 @@ f601fd15-a50a-4fcd-bf92-4bec8aa8922c	f7bbbaa3-e659-4a79-9516-a12aa1823b10	492d2a
 --
 
 COPY public.sales (id, client_id, created_by, sale_date, delivery_date, delivery_address_id, status, total_amount, notes, payment_status, payment_method_id, payment_date, payment_notes, created_at, updated_at, salesperson_id, product_id, quantity) FROM stdin;
-fb50dcc9-3e7d-498d-a4d1-da3f90a41460	13cc520b-a18d-4ebf-a4e4-aed7f1e22a7e	36837910-176b-48b8-9a49-e2bc08431bd9	2024-11-08	2024-11-20	d41cf0f8-0aea-4f0c-9a6e-e9aa4005990e	active	8000.00		paid	f4ee3668-57e1-4126-b64a-3fafe32201bc	2024-11-07 00:00:00+00	\N	2024-11-07 22:22:20.200094+00	2024-11-19 16:54:26.323+00	\N	\N	1
 f608b6c7-cd23-4040-967d-019bcc41f4c2	13cc520b-a18d-4ebf-a4e4-aed7f1e22a7e	36837910-176b-48b8-9a49-e2bc08431bd9	2024-11-21	2024-11-22	619e3d43-f3a4-4476-9ecc-c9ab2afe7453	active	10000.00		paid	f4ee3668-57e1-4126-b64a-3fafe32201bc	2024-11-21 00:00:00+00	\N	2024-11-21 18:18:14.761689+00	2024-11-21 18:18:14.761689+00	\N	\N	1
-f7bbbaa3-e659-4a79-9516-a12aa1823b10	13cc520b-a18d-4ebf-a4e4-aed7f1e22a7e	36837910-176b-48b8-9a49-e2bc08431bd9	2024-11-22	2024-11-22	619e3d43-f3a4-4476-9ecc-c9ab2afe7453	active	5000.00		paid	f4ee3668-57e1-4126-b64a-3fafe32201bc	2024-11-22 00:00:00+00	\N	2024-11-22 04:12:02.520607+00	2024-11-22 04:12:02.520607+00	\N	\N	1
+f7bbbaa3-e659-4a79-9516-a12aa1823b10	13cc520b-a18d-4ebf-a4e4-aed7f1e22a7e	36837910-176b-48b8-9a49-e2bc08431bd9	2024-11-22	2024-11-22	d41cf0f8-0aea-4f0c-9a6e-e9aa4005990e	active	7500.00		paid	f4ee3668-57e1-4126-b64a-3fafe32201bc	2024-11-22 00:00:00+00	\N	2024-11-22 04:12:02.520607+00	2024-11-22 04:59:17.842+00	\N	\N	1
+fb50dcc9-3e7d-498d-a4d1-da3f90a41460	13cc520b-a18d-4ebf-a4e4-aed7f1e22a7e	36837910-176b-48b8-9a49-e2bc08431bd9	2024-11-08	2024-11-20	d41cf0f8-0aea-4f0c-9a6e-e9aa4005990e	active	10000.00		paid	3fa46566-bc26-4feb-a60a-762c0144bc7a	2024-11-06 00:00:00+00		2024-11-07 22:22:20.200094+00	2024-11-22 18:41:42.472+00	\N	\N	1
 \.
 
 
@@ -3497,6 +3727,8 @@ COPY realtime.schema_migrations (version, inserted_at) FROM stdin;
 20241019105805	2024-11-04 22:29:03
 20241030150047	2024-11-19 16:09:53
 20241108114728	2024-11-19 16:09:55
+20241121104152	2024-12-06 18:57:07
+20241130184212	2024-12-06 18:57:09
 \.
 
 
@@ -3588,7 +3820,7 @@ COPY vault.secrets (id, name, description, secret, key_id, nonce, created_at, up
 -- Name: refresh_tokens_id_seq; Type: SEQUENCE SET; Schema: auth; Owner: -
 --
 
-SELECT pg_catalog.setval('auth.refresh_tokens_id_seq', 109, true);
+SELECT pg_catalog.setval('auth.refresh_tokens_id_seq', 125, true);
 
 
 --
@@ -3827,6 +4059,22 @@ ALTER TABLE ONLY public.client_types
 
 ALTER TABLE ONLY public.clients
     ADD CONSTRAINT clients_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: mixed_bundle_items mixed_bundle_items_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mixed_bundle_items
+    ADD CONSTRAINT mixed_bundle_items_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: mixed_bundles mixed_bundles_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mixed_bundles
+    ADD CONSTRAINT mixed_bundles_pkey PRIMARY KEY (id);
 
 
 --
@@ -4311,6 +4559,34 @@ CREATE INDEX idx_clients_type ON public.clients USING btree (type_id);
 
 
 --
+-- Name: idx_mixed_bundle_items_bundle_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_mixed_bundle_items_bundle_id ON public.mixed_bundle_items USING btree (bundle_id);
+
+
+--
+-- Name: idx_mixed_bundle_items_product_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_mixed_bundle_items_product_id ON public.mixed_bundle_items USING btree (product_id);
+
+
+--
+-- Name: idx_mixed_bundles_status; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_mixed_bundles_status ON public.mixed_bundles USING btree (status);
+
+
+--
+-- Name: idx_product_prices_min_quantity; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_product_prices_min_quantity ON public.product_prices USING btree (min_quantity);
+
+
+--
 -- Name: idx_product_prices_product; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -4398,7 +4674,7 @@ CREATE UNIQUE INDEX profiles_email_idx ON public.profiles USING btree (email);
 -- Name: ix_realtime_subscription_entity; Type: INDEX; Schema: realtime; Owner: -
 --
 
-CREATE INDEX ix_realtime_subscription_entity ON realtime.subscription USING hash (entity);
+CREATE INDEX ix_realtime_subscription_entity ON realtime.subscription USING btree (entity);
 
 
 --
@@ -4504,6 +4780,13 @@ CREATE TRIGGER update_client_types_updated_at BEFORE UPDATE ON public.client_typ
 --
 
 CREATE TRIGGER update_clients_updated_at BEFORE UPDATE ON public.clients FOR EACH ROW EXECUTE FUNCTION public.handle_client_update();
+
+
+--
+-- Name: mixed_bundles update_mixed_bundles_updated_at; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER update_mixed_bundles_updated_at BEFORE UPDATE ON public.mixed_bundles FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
 
 
 --
@@ -4675,6 +4958,38 @@ ALTER TABLE ONLY public.clients
 
 ALTER TABLE ONLY public.clients
     ADD CONSTRAINT clients_type_id_fkey FOREIGN KEY (type_id) REFERENCES public.client_types(id);
+
+
+--
+-- Name: mixed_bundle_items mixed_bundle_items_bundle_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mixed_bundle_items
+    ADD CONSTRAINT mixed_bundle_items_bundle_id_fkey FOREIGN KEY (bundle_id) REFERENCES public.mixed_bundles(id) ON DELETE CASCADE;
+
+
+--
+-- Name: mixed_bundle_items mixed_bundle_items_product_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mixed_bundle_items
+    ADD CONSTRAINT mixed_bundle_items_product_id_fkey FOREIGN KEY (product_id) REFERENCES public.products(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: mixed_bundles mixed_bundles_created_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mixed_bundles
+    ADD CONSTRAINT mixed_bundles_created_by_fkey FOREIGN KEY (created_by) REFERENCES auth.users(id);
+
+
+--
+-- Name: mixed_bundles mixed_bundles_updated_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mixed_bundles
+    ADD CONSTRAINT mixed_bundles_updated_by_fkey FOREIGN KEY (updated_by) REFERENCES auth.users(id);
 
 
 --
@@ -4995,6 +5310,20 @@ CREATE POLICY "Enable delete for authenticated users" ON public.profiles FOR DEL
 
 
 --
+-- Name: mixed_bundle_items Enable delete for authenticated users only; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY "Enable delete for authenticated users only" ON public.mixed_bundle_items FOR DELETE USING ((auth.role() = 'authenticated'::text));
+
+
+--
+-- Name: mixed_bundles Enable delete for authenticated users only; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY "Enable delete for authenticated users only" ON public.mixed_bundles FOR DELETE USING ((auth.role() = 'authenticated'::text));
+
+
+--
 -- Name: product_prices Enable insert for authenticated users; Type: POLICY; Schema: public; Owner: -
 --
 
@@ -5009,10 +5338,40 @@ CREATE POLICY "Enable insert for authenticated users" ON public.profiles FOR INS
 
 
 --
+-- Name: mixed_bundle_items Enable insert for authenticated users only; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY "Enable insert for authenticated users only" ON public.mixed_bundle_items FOR INSERT WITH CHECK ((auth.role() = 'authenticated'::text));
+
+
+--
+-- Name: mixed_bundles Enable insert for authenticated users only; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY "Enable insert for authenticated users only" ON public.mixed_bundles FOR INSERT WITH CHECK ((auth.role() = 'authenticated'::text));
+
+
+--
 -- Name: client_addresses Enable insert/update for service role; Type: POLICY; Schema: public; Owner: -
 --
 
 CREATE POLICY "Enable insert/update for service role" ON public.client_addresses TO service_role USING (true) WITH CHECK (true);
+
+
+--
+-- Name: mixed_bundle_items Enable read access for all users; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY "Enable read access for all users" ON public.mixed_bundle_items FOR SELECT USING (((auth.role() = 'authenticated'::text) AND (EXISTS ( SELECT 1
+   FROM public.mixed_bundles mb
+  WHERE ((mb.id = mixed_bundle_items.bundle_id) AND (mb.status = 'active'::text) AND ((mb.end_date IS NULL) OR (mb.end_date >= CURRENT_DATE)))))));
+
+
+--
+-- Name: mixed_bundles Enable read access for all users; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY "Enable read access for all users" ON public.mixed_bundles FOR SELECT USING (((auth.role() = 'authenticated'::text) AND (status = 'active'::text) AND ((end_date IS NULL) OR (end_date >= CURRENT_DATE))));
 
 
 --
@@ -5055,6 +5414,13 @@ CREATE POLICY "Enable update for authenticated users" ON public.product_prices F
 --
 
 CREATE POLICY "Enable update for authenticated users" ON public.profiles FOR UPDATE USING ((auth.uid() IS NOT NULL));
+
+
+--
+-- Name: mixed_bundles Enable update for authenticated users only; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY "Enable update for authenticated users only" ON public.mixed_bundles FOR UPDATE USING ((auth.role() = 'authenticated'::text)) WITH CHECK ((auth.role() = 'authenticated'::text));
 
 
 --
@@ -5219,6 +5585,18 @@ ALTER TABLE public.client_types ENABLE ROW LEVEL SECURITY;
 --
 
 ALTER TABLE public.clients ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: mixed_bundle_items; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.mixed_bundle_items ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: mixed_bundles; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.mixed_bundles ENABLE ROW LEVEL SECURITY;
 
 --
 -- Name: payment_methods; Type: ROW SECURITY; Schema: public; Owner: -
@@ -5992,6 +6370,15 @@ GRANT ALL ON FUNCTION public.get_product_price_at_date(product_id uuid, target_d
 
 
 --
+-- Name: FUNCTION get_quantity_based_price(p_product_id uuid, p_quantity numeric); Type: ACL; Schema: public; Owner: -
+--
+
+GRANT ALL ON FUNCTION public.get_quantity_based_price(p_product_id uuid, p_quantity numeric) TO anon;
+GRANT ALL ON FUNCTION public.get_quantity_based_price(p_product_id uuid, p_quantity numeric) TO authenticated;
+GRANT ALL ON FUNCTION public.get_quantity_based_price(p_product_id uuid, p_quantity numeric) TO service_role;
+
+
+--
 -- Name: FUNCTION handle_client_price_update(); Type: ACL; Schema: public; Owner: -
 --
 
@@ -6088,6 +6475,15 @@ GRANT ALL ON FUNCTION public.update_product_price(p_new_price numeric, p_product
 GRANT ALL ON FUNCTION public.update_product_price(p_product_id uuid, p_new_price integer, p_valid_from date, p_user_id uuid) TO anon;
 GRANT ALL ON FUNCTION public.update_product_price(p_product_id uuid, p_new_price integer, p_valid_from date, p_user_id uuid) TO authenticated;
 GRANT ALL ON FUNCTION public.update_product_price(p_product_id uuid, p_new_price integer, p_valid_from date, p_user_id uuid) TO service_role;
+
+
+--
+-- Name: FUNCTION update_updated_at_column(); Type: ACL; Schema: public; Owner: -
+--
+
+GRANT ALL ON FUNCTION public.update_updated_at_column() TO anon;
+GRANT ALL ON FUNCTION public.update_updated_at_column() TO authenticated;
+GRANT ALL ON FUNCTION public.update_updated_at_column() TO service_role;
 
 
 --
@@ -6524,6 +6920,24 @@ GRANT ALL ON TABLE public.client_types TO service_role;
 GRANT ALL ON TABLE public.clients TO anon;
 GRANT ALL ON TABLE public.clients TO authenticated;
 GRANT ALL ON TABLE public.clients TO service_role;
+
+
+--
+-- Name: TABLE mixed_bundle_items; Type: ACL; Schema: public; Owner: -
+--
+
+GRANT ALL ON TABLE public.mixed_bundle_items TO anon;
+GRANT ALL ON TABLE public.mixed_bundle_items TO authenticated;
+GRANT ALL ON TABLE public.mixed_bundle_items TO service_role;
+
+
+--
+-- Name: TABLE mixed_bundles; Type: ACL; Schema: public; Owner: -
+--
+
+GRANT ALL ON TABLE public.mixed_bundles TO anon;
+GRANT ALL ON TABLE public.mixed_bundles TO authenticated;
+GRANT ALL ON TABLE public.mixed_bundles TO service_role;
 
 
 --

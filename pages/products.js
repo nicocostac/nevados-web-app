@@ -46,7 +46,18 @@ function ProductManagement() {
             id,
             price,
             start_date,
-            end_date
+            end_date,
+            min_quantity,
+            max_quantity
+          ),
+          bundle_items:mixed_bundle_items (
+            bundle:mixed_bundles (
+              id,
+              name,
+              description,
+              total_price,
+              status
+            )
           )
         `)
         .order('name');
@@ -67,30 +78,43 @@ function ProductManagement() {
           return startDate <= currentDate && (!endDate || endDate >= currentDate);
         });
 
-        // Find future prices (start date is after current date)
-        const futurePrices = sortedPrices.filter(price => 
-          new Date(price.start_date) > currentDate
-        );
+        // Get quantity-based prices
+        const quantityPrices = sortedPrices
+          .filter(price => price.min_quantity || price.max_quantity)
+          .sort((a, b) => a.min_quantity - b.min_quantity);
 
-        // Find historical prices (end date is before current date)
-        const historicalPrices = sortedPrices.filter(price => 
-          price.end_date && new Date(price.end_date) < currentDate
-        );
+        // Get bundles this product is part of
+        const bundles = product.bundle_items
+          ?.filter(item => item.bundle?.status === 'active')
+          .map(item => item.bundle);
 
         return {
           ...product,
           currentPrice: currentPrice ? currentPrice.price : 0,
           currentPriceId: currentPrice ? currentPrice.id : null,
           price_start_date: currentPrice ? currentPrice.start_date : null,
-          futurePrices,
-          historicalPrices
+          quantityPrices,
+          bundles
         };
       });
 
       setProducts(formattedProducts);
     } catch (error) {
       console.error('Error fetching products:', error);
+      setMessage('Error fetching products');
     }
+  };
+
+  // Helper function to get price based on quantity
+  const getPriceForQuantity = (product, quantity) => {
+    if (!product.quantityPrices?.length) return product.currentPrice;
+
+    const applicablePrice = product.quantityPrices.find(price => 
+      quantity >= price.min_quantity && 
+      (!price.max_quantity || quantity <= price.max_quantity)
+    );
+
+    return applicablePrice?.price || product.currentPrice;
   };
 
   // Fetch current user's role, categories and products list
@@ -338,19 +362,37 @@ function ProductManagement() {
                               (desde {formatDate(product.price_start_date)})
                             </span>
                           </div>
-                          {product.futurePrices && product.futurePrices.length > 0 && (
+                          {product.quantityPrices?.length > 0 && (
                             <div className="text-sm mt-1">
-                              {(() => {
-                                const nextPrice = getNextFuturePrice(product.futurePrices);
-                                if (nextPrice) {
-                                  return (
-                                    <span className="text-blue-600">
-                                      Próximo precio: {formatCurrency(nextPrice.price)} 
-                                      <span className="text-gray-500"> (desde {formatDate(nextPrice.start_date)})</span>
-                                    </span>
-                                  );
-                                }
-                              })()}
+                              <span className="text-blue-600">
+                                Quantity pricing available:
+                              </span>
+                              <ul className="mt-1 space-y-1">
+                                {product.quantityPrices.map((price, index) => (
+                                  <li key={index} className="text-gray-600">
+                                    {price.min_quantity}
+                                    {price.max_quantity ? ` - ${price.max_quantity}` : '+'} units: 
+                                    {formatCurrency(price.price)} each
+                                  </li>
+                                ))}
+                              </ul>
+                            </div>
+                          )}
+                          {product.bundles?.length > 0 && (
+                            <div className="text-sm mt-1">
+                              <span className="text-blue-600">
+                                Available in bundles:
+                              </span>
+                              <ul className="mt-1 space-y-1">
+                                {product.bundles.map(bundle => (
+                                  <li key={bundle.id} className="text-gray-600">
+                                    <a href={`/bundles#${bundle.id}`} className="text-blue-600 hover:underline">
+                                      {bundle.name}
+                                    </a>
+                                    {' - '}{formatCurrency(bundle.total_price)}
+                                  </li>
+                                ))}
+                              </ul>
                             </div>
                           )}
                         </>
