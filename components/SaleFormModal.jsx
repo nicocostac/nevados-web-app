@@ -5,6 +5,7 @@ import { Alert } from '@/components/ui/alert'
 import { X, Plus, Minus, Search } from 'lucide-react'
 import { supabase } from '@/lib/supabaseClient'
 import { formatCurrency } from '@/lib/utils/format'
+import { useToast } from '@/components/ui/use-toast'
 
 // Add this helper function at the top of the component, after the imports
 const formatDate = (date) => {
@@ -32,11 +33,13 @@ export default function SaleFormModal({
   onClose, 
   onSubmit, 
   onSuccess = () => {}, 
+  refreshSales = () => {},
   editingSale = null,
   clients = [],
   products = [],
   paymentMethods = []
 }) {
+  const { toast } = useToast()
   const [error, setError] = useState('')
   const [formData, setFormData] = useState({
     clientId: '',
@@ -52,6 +55,7 @@ export default function SaleFormModal({
   })
   const [clientSearch, setClientSearch] = useState('')
   const [filteredClients, setFilteredClients] = useState(clients)
+  const [isSearching, setIsSearching] = useState(false);
   const [specialPrices, setSpecialPrices] = useState({})
   const [showClientDropdown, setShowClientDropdown] = useState(false)
   const [selectedClient, setSelectedClient] = useState(null)
@@ -87,7 +91,7 @@ export default function SaleFormModal({
       
       if (applicableBundle) {
         console.log('Using quantity bundle price:', applicableBundle);
-        // Calculate unit price from bundle (total bundle price / bundle quantity)
+        // Calculate unit price from bundle
         const bundleQuantity = Number(applicableBundle.bundle_quantity);
         const unitPrice = Number(applicableBundle.price) / bundleQuantity;
         const total = qty * unitPrice;
@@ -114,7 +118,7 @@ export default function SaleFormModal({
     setFormData(prev => {
       const newItems = [...prev.items];
       const item = newItems[index];
-      const priceInfo = productPrices[item.productId];
+      const priceInfo = productPrices[item.product.id];
 
       // Default to regular price
       let unitPrice = Number(priceInfo?.price) || 0;
@@ -185,8 +189,8 @@ export default function SaleFormModal({
       
       // Group items by product ID to handle multiple quantities
       const itemsByProduct = items.reduce((acc, item) => {
-        acc[item.productId] = {
-          quantity: (acc[item.productId]?.quantity || 0) + Number(item.quantity || 0),
+        acc[item.product.id] = {
+          quantity: (acc[item.product.id]?.quantity || 0) + Number(item.quantity || 0),
           unitPrice: item.unitPrice || 0
         };
         return acc;
@@ -288,46 +292,67 @@ export default function SaleFormModal({
       const item = { ...newItems[index] };
       
       if (field === 'productId') {
-        const product = products.find(p => p.id === value);
-        const priceInfo = productPrices[value];
-        
-        if (priceInfo) {
-          item.productId = value;
-          item.productName = product?.name || '';
-          item.unitPrice = priceInfo.price;
-          item.quantity = item.quantity || 1;
+        // If no product selected, reset the item
+        if (!value) {
+          item.product = null;
+          item.productId = null;
+          item.quantity = 1;
+          item.unitPrice = 0;
+          item.totalPrice = 0;
+          item.price_type = null;
+        } else {
+          const product = products.find(p => p.id === value);
+          const priceInfo = productPrices[value];
           
-          // Check quantity bundles
-          if (priceInfo.quantity_bundles && priceInfo.quantity_bundles.length > 0) {
-            const qty = Math.max(1, Number(item.quantity));
-            const sortedBundles = [...priceInfo.quantity_bundles].sort((a, b) => 
-              Number(b.bundle_quantity) - Number(a.bundle_quantity)
-            );
+          if (priceInfo) {
+            item.product = product;
+            item.productId = product.id; // Ensure we set the product_id correctly
+            item.quantity = item.quantity || 1;
             
-            const applicableBundle = sortedBundles.find(bundle => 
-              qty >= Number(bundle.bundle_quantity)
-            );
-            
-            if (applicableBundle) {
-              item.unitPrice = applicableBundle.price / Number(applicableBundle.bundle_quantity);
+            // Calculate unit price based on price type
+            if (priceInfo.price_type === 'client') {
+              item.unitPrice = Number(priceInfo.price);
+            } else if (priceInfo.quantity_bundles && priceInfo.quantity_bundles.length > 0) {
+              const sortedBundles = [...priceInfo.quantity_bundles].sort((a, b) => 
+                Number(b.bundle_quantity) - Number(a.bundle_quantity)
+              );
+              
+              const applicableBundle = sortedBundles.find(bundle => 
+                item.quantity >= Number(bundle.bundle_quantity)
+              );
+              
+              if (applicableBundle) {
+                item.unitPrice = Number(applicableBundle.price) / Number(applicableBundle.bundle_quantity);
+              } else {
+                item.unitPrice = Number(priceInfo.price);
+              }
+            } else {
+              item.unitPrice = Number(priceInfo.price);
             }
+            
+            // Ensure we calculate and set the total_price
+            item.totalPrice = item.quantity * item.unitPrice;
+            item.price_type = priceInfo.price_type;
+          } else {
+            // If no price info, reset pricing but keep product
+            item.product = product;
+            item.productId = product.id; // Ensure we set the product_id correctly
+            item.quantity = 1;
+            item.unitPrice = 0;
+            item.totalPrice = 0;
+            item.price_type = null;
           }
-          
-          item.totalPrice = item.unitPrice * item.quantity;
-          
-          // Update the item
-          newItems[index] = item;
-          
-          // Check for mixed bundle discounts
-          checkForCompleteBundles(newItems);
         }
       } else if (field === 'quantity') {
-        item.quantity = value;
-        const priceInfo = productPrices[item.productId];
+        const qty = Math.max(1, Number(value));
+        item.quantity = qty;
+        const priceInfo = productPrices[item.product?.id];
+        
         if (priceInfo) {
-          // Check quantity bundles
-          if (priceInfo.quantity_bundles && priceInfo.quantity_bundles.length > 0) {
-            const qty = Math.max(1, Number(value));
+          // Recalculate unit price based on new quantity
+          if (priceInfo.price_type === 'client') {
+            item.unitPrice = Number(priceInfo.price);
+          } else if (priceInfo.quantity_bundles && priceInfo.quantity_bundles.length > 0) {
             const sortedBundles = [...priceInfo.quantity_bundles].sort((a, b) => 
               Number(b.bundle_quantity) - Number(a.bundle_quantity)
             );
@@ -337,113 +362,39 @@ export default function SaleFormModal({
             );
             
             if (applicableBundle) {
-              item.unitPrice = applicableBundle.price / Number(applicableBundle.bundle_quantity);
+              item.unitPrice = Number(applicableBundle.price) / Number(applicableBundle.bundle_quantity);
             } else {
-              item.unitPrice = priceInfo.price;
+              item.unitPrice = Number(priceInfo.price);
             }
+          } else {
+            item.unitPrice = Number(priceInfo.price);
           }
           
-          item.totalPrice = Number(value) * item.unitPrice;
-          
-          // Update the item
-          newItems[index] = item;
-          
-          // Check for mixed bundle discounts
-          checkForCompleteBundles(newItems);
+          // Ensure we calculate and set the total_price
+          item.totalPrice = qty * item.unitPrice;
+          item.price_type = priceInfo.price_type;
         }
       }
       
+      newItems[index] = item;
       return { ...prev, items: newItems };
     });
   };
 
-  useEffect(() => {
-    console.log('Product Prices Updated:', productPrices);
-    console.log('Form Items:', formData.items);
-  }, [productPrices, formData.items]);
-
-  useEffect(() => {
-    if (editingSale) {
-      const items = editingSale.sale_items.map(item => ({
-        productId: item.product_id,
-        quantity: item.quantity,
-        unitPrice: item.unit_price,
-        totalPrice: item.total_price,
-        discountPercentage: item.discount_percentage
-      }))
-
-      // For editing, use the dates directly from the database
-      setFormData({
-        clientId: editingSale.client_id || '',
-        saleDate: formatDateForInput(editingSale.sale_date),
-        deliveryDate: formatDateForInput(editingSale.delivery_date),
-        deliveryAddressId: editingSale.delivery_address_id,
-        items: items || [],
-        notes: editingSale.notes || '',
-        paymentStatus: editingSale.payment_status || 'pending',
-        paymentMethodId: editingSale.payment_method_id || '',
-        paymentDate: editingSale.payment_date ? formatDateForInput(editingSale.payment_date) : '',
-        paymentNotes: editingSale.payment_notes || ''
-      })
-
-      const client = clients.find(client => client.id === editingSale.client_id)
-      setSelectedClient(client)
-      setClientSearch(client?.name || '')
-      if (client) {
-        fetchClientAddresses(client.id)
-        fetchSpecialPrices(client.id)
-      }
-    } else {
-      // For new sales, reset everything
-      const today = new Date()
-      setFormData({
-        clientId: '',
-        deliveryAddressId: '',
-        saleDate: formatDateForInput(today),
-        deliveryDate: formatDateForInput(today),
-        items: [],
-        notes: '',
-        paymentStatus: 'pending',
-        paymentMethodId: '',
-        paymentDate: '',
-        paymentNotes: ''
-      })
-      setSelectedClient(null)
-      setClientAddresses([])
-      setSpecialPrices({})
-      setBundleDiscount(0)
-    }
-  }, [editingSale, clients])
-
-  // Filter clients based on search
-  useEffect(() => {
-    const filtered = clients.filter(client =>
-      client.name.toLowerCase().includes(clientSearch.toLowerCase())
-    )
-    setFilteredClients(filtered)
-  }, [clientSearch, clients])
-
-  // Fetch special prices when client is selected
-  useEffect(() => {
-    if (formData.clientId) {
-      fetchSpecialPrices(formData.clientId)
-    }
-  }, [formData.clientId])
-
-  // Fetch product prices when client or sale date changes
-  useEffect(() => {
-    if (formData.saleDate && formData.clientId) {
-      fetchProductPrices(formData.saleDate, formData.clientId)
-    }
-  }, [formData.saleDate, formData.clientId])
-
-  // Add useEffect to fetch prices when component mounts with initial data
-  useEffect(() => {
-    if (formData.clientId && formData.saleDate) {
-      console.log('Initial fetch of product prices');
-      fetchProductPrices(formData.saleDate, formData.clientId);
-    }
-  }, []);
+  const addItem = () => {
+    setFormData(prev => ({
+      ...prev,
+      items: [
+        ...prev.items,
+        {
+          product: null,
+          quantity: 1,
+          unitPrice: 0,
+          totalPrice: 0
+        }
+      ]
+    }));
+  };
 
   const fetchSpecialPrices = async (clientId) => {
     if (!clientId) return;
@@ -532,7 +483,7 @@ export default function SaleFormModal({
       setFormData(prev => ({
         ...prev,
         items: prev.items.map(item => {
-          const priceInfo = priceMap[item.productId];
+          const priceInfo = priceMap[item.product.id];
           if (priceInfo) {
             return {
               ...item,
@@ -567,85 +518,103 @@ export default function SaleFormModal({
   };
 
   const handleSubmit = async (e) => {
-    e.preventDefault()
-    setLoading(true)
-    setError('')
+    e.preventDefault();
+    setLoading(true);
 
     try {
-      // Validate required fields
-      if (!formData.clientId || !formData.deliveryAddressId || !formData.saleDate || !formData.deliveryDate) {
-        throw new Error('Please fill in all required fields')
+      // Validate items before submission
+      const validItems = formData.items.filter(item => {
+        // Add logging to help debug validation issues
+        console.log('Validating item:', {
+          hasProduct: !!item.product,
+          hasProductId: !!item.productId,
+          quantity: item.quantity,
+          unitPrice: item.unitPrice,
+          totalPrice: item.totalPrice
+        });
+        
+        return item.product && 
+               item.productId && 
+               Number(item.quantity) > 0 && 
+               Number(item.unitPrice) > 0;
+      });
+
+      if (validItems.length === 0) {
+        throw new Error('Por favor, agregue al menos un producto válido a la venta');
       }
 
-      if (formData.items.length === 0) {
-        throw new Error('Please add at least one item to the sale')
-      }
+      const total = calculateTotal();
+      console.log('Submitting sale with total:', total);
+      console.log('Form data:', formData);
+      console.log('Valid items:', validItems);
 
-      const total = calculateTotal()
-      console.log('Submitting sale with total:', total)
+      const mappedItems = validItems.map(item => {
+        // Add logging to see what's being sent
+        const mappedItem = {
+          productId: item.productId, // Change from product_id to productId to match backend
+          quantity: Number(item.quantity),
+          unitPrice: Number(item.unitPrice),
+          totalPrice: Number(item.quantity * item.unitPrice) // Recalculate to ensure accuracy
+        };
+        console.log('Mapped item for submission:', mappedItem);
+        return mappedItem;
+      });
 
-      // Format dates for database
-      const saleDate = formatDateForDB(formData.saleDate)
-      const deliveryDate = formatDateForDB(formData.deliveryDate)
-      const paymentDate = formData.paymentDate ? formatDateForDB(formData.paymentDate) : null
+      console.log('Mapped items:', mappedItems);
 
-      // Format items for database
-      const items = formData.items.map(item => ({
-        productId: item.productId,
-        quantity: Number(item.quantity),
-        unitPrice: Number(item.unitPrice || 0),
-        totalPrice: Number(item.totalPrice || 0),
-        discountPercentage: Number(item.discountPercentage || 0)
-      }))
-
-      let result;
-      
       if (editingSale) {
-        // Update existing sale
-        const { data, error } = await supabase.rpc('update_sale_with_items', {
+        // Call the update_sale_with_items RPC function
+        const { data: updatedSale, error } = await supabase.rpc('update_sale_with_items', {
           p_sale_id: editingSale.id,
           p_client_id: formData.clientId,
-          p_sale_date: saleDate,
-          p_delivery_date: deliveryDate,
           p_delivery_address_id: formData.deliveryAddressId,
+          p_sale_date: formatDateForDB(formData.saleDate),
+          p_delivery_date: formatDateForDB(formData.deliveryDate),
           p_total_amount: total,
           p_notes: formData.notes,
-          p_items: items,
           p_payment_status: formData.paymentStatus,
-          p_payment_method_id: formData.paymentMethodId || null,
-          p_payment_date: paymentDate,
-          p_payment_notes: formData.paymentNotes
-        })
+          p_payment_method_id: formData.paymentMethodId,
+          p_payment_date: formData.paymentDate ? formatDateForDB(formData.paymentDate) : null,
+          p_payment_notes: formData.paymentNotes,
+          p_items: mappedItems
+        });
 
-        if (error) throw error
-        result = data
+        if (error) throw error;
+        onSuccess(updatedSale);
       } else {
-        // Create new sale
-        const { data, error } = await supabase.rpc('create_sale_with_items', {
+        // Call the create_sale_with_items RPC function
+        const { data: newSale, error } = await supabase.rpc('create_sale_with_items', {
           p_client_id: formData.clientId,
-          p_sale_date: saleDate,
-          p_delivery_date: deliveryDate,
           p_delivery_address_id: formData.deliveryAddressId,
+          p_sale_date: formatDateForDB(formData.saleDate),
+          p_delivery_date: formatDateForDB(formData.deliveryDate),
           p_total_amount: total,
           p_notes: formData.notes,
-          p_items: items,
           p_payment_status: formData.paymentStatus,
-          p_payment_method_id: formData.paymentMethodId || null,
-          p_payment_date: paymentDate,
-          p_payment_notes: formData.paymentNotes
-        })
+          p_payment_method_id: formData.paymentMethodId,
+          p_payment_date: formData.paymentDate ? formatDateForDB(formData.paymentDate) : null,
+          p_payment_notes: formData.paymentNotes,
+          p_items: mappedItems
+        });
 
-        if (error) throw error
-        result = data
+        if (error) throw error;
+        onSuccess(newSale);
       }
 
-      onSuccess(result)
-      onClose()
+      onClose();
+      toast({
+        title: editingSale ? "Venta Actualizada" : "Venta Creada",
+        description: editingSale ? "Venta actualizada exitosamente" : "Venta creada exitosamente"
+      });
     } catch (error) {
-      console.error('Error submitting sale:', error)
-      setError(error.message)
+      console.error('Error submitting sale:', error);
+      toast({
+        variant: "destructive",
+        title: "Error",
+        description: `Error ${editingSale ? 'actualizando' : 'creando'} la venta: ${error.message}`
+      });
     } finally {
-      setLoading(false)
+      setLoading(false);
     }
   };
 
@@ -694,24 +663,47 @@ export default function SaleFormModal({
     if (isOpen) {
       const today = formatDateForInput(new Date());
       if (editingSale) {
-        // For editing, use the dates from the sale but ensure they're in the right format
-        setFormData(prev => ({
-          ...prev,
-          clientId: editingSale.client_id,
-          deliveryAddressId: editingSale.delivery_address_id,
-          saleDate: formatDateForInput(editingSale.sale_date),
-          deliveryDate: formatDateForInput(editingSale.delivery_date),
-          notes: editingSale.notes || '',
-          items: editingSale.sale_items?.map(item => ({
-            productId: item.product_id,
+        // Set selected client first
+        const client = clients.find(c => c.id === editingSale.client_id);
+        setSelectedClient(client);
+        setClientSearch(client?.name || '');
+        
+        // Fetch client data before initializing form
+        const initializeForm = async () => {
+          if (client) {
+            await fetchClientAddresses(client.id);
+            // Fetch product prices using the sale date
+            await fetchProductPrices(formatDateForDB(editingSale.sale_date), client.id);
+          }
+          
+          // Map sale items to form format after prices are fetched
+          const items = editingSale.sale_items.map(item => ({
+            product: item.product,
+            productId: item.product.id,
             quantity: item.quantity,
             unitPrice: item.unit_price,
             totalPrice: item.total_price,
-            discountPercentage: item.discount_percentage || 0
-          })) || []
-        }));
+            price_type: productPrices[item.product.id]?.price_type || null
+          }));
+
+          // Set form data with existing sale details
+          setFormData({
+            clientId: editingSale.client_id,
+            deliveryAddressId: editingSale.delivery_address_id,
+            saleDate: formatDateForInput(editingSale.sale_date),
+            deliveryDate: formatDateForInput(editingSale.delivery_date),
+            items: items,
+            notes: editingSale.notes || '',
+            paymentStatus: editingSale.payment_status || 'pending',
+            paymentMethodId: editingSale.payment_method_id,
+            paymentDate: editingSale.payment_date ? formatDateForInput(editingSale.payment_date) : '',
+            paymentNotes: editingSale.payment_notes || ''
+          });
+        };
+
+        initializeForm();
       } else {
-        // For new sale, reset all state
+        // Initialize new sale with default values
         setFormData({
           clientId: '',
           deliveryAddressId: '',
@@ -725,31 +717,58 @@ export default function SaleFormModal({
           paymentNotes: ''
         });
         setSelectedClient(null);
-        setProductPrices({});
-        setError('');
+        setClientSearch('');
+        setClientAddresses([]);
+        setSpecialPrices({});
       }
     }
-  }, [isOpen, editingSale]);
+  }, [isOpen, editingSale, clients]);
 
-  const addItem = () => {
-    setFormData(prev => ({
-      ...prev,
-      items: [...prev.items, { 
-        productId: '', 
-        quantity: 1,
-        unitPrice: 0,
-        totalPrice: 0,
-        discountPercentage: 0
-      }]
-    }))
-  }
+  useEffect(() => {
+    const normalizeText = (text) => {
+      return text
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '');
+    };
 
-  const removeItem = (index) => {
-    setFormData(prev => ({
-      ...prev,
-      items: prev.items.filter((_, i) => i !== index)
-    }))
-  }
+    if (!clientSearch.trim()) {
+      setFilteredClients(clients);
+      return;
+    }
+
+    const normalizedSearch = normalizeText(clientSearch);
+    const filtered = clients.filter(client => 
+      normalizeText(client.name).includes(normalizedSearch)
+    );
+    
+    setFilteredClients(filtered);
+  }, [clientSearch, clients]);
+
+  useEffect(() => {
+    if (clientAddresses.length > 0) {
+      const defaultAddress = clientAddresses.find(addr => addr.is_default)
+      if (defaultAddress) {
+        console.log('Setting default address:', defaultAddress.id);
+        setFormData(prev => ({
+          ...prev,
+          deliveryAddressId: defaultAddress.id
+        }));
+      }
+    }
+  }, [clientAddresses])
+
+  useEffect(() => {
+    if (formData.clientId) {
+      fetchClientAddresses(formData.clientId);
+    }
+  }, [formData.clientId]);
+
+  useEffect(() => {
+    if (formData.clientId && formData.saleDate) {
+      fetchProductPrices(formatDateForDB(formData.saleDate), formData.clientId);
+    }
+  }, [formData.saleDate]);
 
   const fetchClientAddresses = async (clientId) => {
     if (!clientId) return;
@@ -800,20 +819,19 @@ export default function SaleFormModal({
     }
   };
 
-  const handleClientSelect = async (client) => {
-    console.log('Client selected:', client);
+  const selectClient = async (client) => {
     setSelectedClient(client);
-    setFormData(prev => ({ 
-      ...prev, 
-      clientId: client.id,
-      deliveryAddressId: '' // Reset address ID before fetching new addresses
-    }));
     setClientSearch(client.name);
     setShowClientDropdown(false);
+    setFormData(prev => ({
+      ...prev,
+      clientId: client.id,
+      deliveryAddressId: ''
+    }));
     
-    // First fetch addresses, then fetch prices
+    // Fetch client-specific data
     await fetchClientAddresses(client.id);
-    await fetchProductPrices(formData.saleDate, client.id);
+    await fetchProductPrices(formatDateForDB(formData.saleDate), client.id);
   };
 
   useEffect(() => {
@@ -828,19 +846,6 @@ export default function SaleFormModal({
       document.removeEventListener('mousedown', handleClickOutside)
     }
   }, [])
-
-  useEffect(() => {
-    if (clientAddresses.length > 0) {
-      const defaultAddress = clientAddresses.find(addr => addr.is_default)
-      if (defaultAddress) {
-        console.log('Setting default address:', defaultAddress.id);
-        setFormData(prev => ({
-          ...prev,
-          deliveryAddressId: defaultAddress.id
-        }));
-      }
-    }
-  }, [clientAddresses])
 
   const renderPriceWithType = (item) => {
     const priceText = `$${item.unitPrice.toFixed(2)}`;
@@ -859,6 +864,13 @@ export default function SaleFormModal({
       default:
         return priceText;
     }
+  };
+
+  const removeItem = (index) => {
+    setFormData(prev => ({
+      ...prev,
+      items: prev.items.filter((_, i) => i !== index)
+    }));
   };
 
   if (!isOpen) return null
@@ -940,7 +952,7 @@ export default function SaleFormModal({
                   <div
                     key={client.id}
                     className="px-4 py-2 hover:bg-gray-100 cursor-pointer"
-                    onClick={() => handleClientSelect(client)}
+                    onClick={() => selectClient(client)}
                   >
                     {client.name}
                   </div>
@@ -1022,7 +1034,7 @@ export default function SaleFormModal({
               <div key={index} className="grid grid-cols-12 gap-4 items-end">
                 <div className="col-span-5">
                   <select
-                    value={item.productId || ''}
+                    value={item.product?.id || ''}
                     onChange={(e) => updateItem(index, 'productId', e.target.value)}
                     className="w-full p-2 border rounded"
                     required
@@ -1040,7 +1052,7 @@ export default function SaleFormModal({
                   <Input
                     type="number"
                     value={item.quantity || ''}
-                    onChange={(e) => handleQuantityChange(index, parseFloat(e.target.value))}
+                    onChange={(e) => updateItem(index, 'quantity', parseFloat(e.target.value))}
                     placeholder="Qty"
                     required
                     min="1"
@@ -1050,7 +1062,7 @@ export default function SaleFormModal({
 
                 <div className="col-span-2 relative mt-1">
                   <div className="text-xs text-gray-500 absolute -top-4 left-0">
-                    {getPriceLabel(item, productPrices[item.productId])}
+                    {getPriceLabel(item, productPrices[item.product?.id])}
                   </div>
                   <Input
                     type="text"

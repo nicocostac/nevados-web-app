@@ -59,6 +59,10 @@ function SalesManagement() {
   const [totalPages, setTotalPages] = useState(0)
   const [totalRecords, setTotalRecords] = useState(0)
   const [isLoading, setIsLoading] = useState(true)
+  const [sortConfig, setSortConfig] = useState({
+    key: 'sale_date',
+    direction: 'desc'
+  });
   const rowsPerPage = 10
 
   useEffect(() => {
@@ -71,12 +75,13 @@ function SalesManagement() {
 
   useEffect(() => {
     fetchSales()
-  }, [filters, currentPage])
+  }, [filters, currentPage, sortConfig])
 
   const fetchSales = async () => {
     try {
       setIsLoading(true);
       console.log('Starting fetchSales for page', currentPage);
+      console.log('Current sort config:', sortConfig);
 
       // First, get total count
       const countQuery = supabase
@@ -157,11 +162,9 @@ function SalesManagement() {
             boroughs:boroughs!left(name),
             neighborhoods:neighborhoods!left(name)
           )
-        `)
-        .order('sale_date', { ascending: false }) // Change to descending to show newest first
-        .order('id', { ascending: false });       // Change to descending to maintain consistent order
+        `);
 
-      // Apply the same filters to the data query
+      // Apply filters
       if (filters.borough) {
         query = query.filter('delivery_address.boroughs.name', 'eq', filters.borough);
       }
@@ -187,12 +190,50 @@ function SalesManagement() {
         query = query.eq('payment_status', filters.paymentStatus);
       }
 
-      // Add the range after all filters
+      // Add sorting
+      const ascending = sortConfig.direction === 'asc';
+      
+      // Handle special cases for foreign key relationships
+      switch (sortConfig.key) {
+        case 'client':
+          query = query.order('client(name)', { ascending });
+          break;
+        case 'delivery_address':
+          query = query.order('delivery_address(street_address)', { ascending });
+          break;
+        case 'total_amount':
+          query = query.order('total_amount', { ascending, nullsFirst: false });
+          break;
+        case 'sale_date':
+          query = query.order('sale_date', { ascending, nullsFirst: false });
+          break;
+        case 'delivery_date':
+          query = query.order('delivery_date', { ascending, nullsFirst: false });
+          break;
+        case 'status':
+          query = query.order('status', { ascending, nullsFirst: false });
+          break;
+        case 'payment_status':
+          query = query.order('payment_status', { ascending, nullsFirst: false });
+          break;
+        default:
+          query = query.order('sale_date', { ascending: false });
+          break;
+      }
+
+      // Always add a secondary sort by ID to maintain consistent order
+      query = query.order('id', { ascending: false });
+
+      // Add pagination
       query = query.range(start, end);
 
+      console.log('Executing query with sort:', sortConfig);
       const { data: salesData, error: salesError } = await query;
 
-      if (salesError) throw salesError;
+      if (salesError) {
+        console.error('Error fetching sales:', salesError);
+        throw salesError;
+      }
       if (!salesData) throw new Error('No sales data received');
 
       console.log(`Received ${salesData.length} records for page ${currentPage}`);
@@ -665,6 +706,28 @@ function SalesManagement() {
     setCurrentPage(pageNumber);
   };
 
+  const handleSort = (key) => {
+    setSortConfig(prevConfig => {
+      if (prevConfig.key === key) {
+        // If clicking the same column, toggle direction
+        return {
+          key,
+          direction: prevConfig.direction === 'asc' ? 'desc' : 'asc'
+        }
+      }
+      // If clicking a new column, default to ascending
+      return {
+        key,
+        direction: 'asc'
+      }
+    })
+  }
+
+  const getSortIcon = (columnKey) => {
+    if (sortConfig.key !== columnKey) return '↕️'
+    return sortConfig.direction === 'asc' ? '↑' : '↓'
+  }
+
   return (
     <div className="space-y-6">
       {message && (
@@ -807,45 +870,79 @@ function SalesManagement() {
       {/* Sales Table */}
       <div className="bg-white shadow rounded-lg overflow-hidden">
         <div className="overflow-x-auto">
-          <table className="min-w-full">
+          <table className="min-w-full bg-white">
             <thead className="bg-gray-50">
               <tr>
-                <th className="px-6 py-3 text-left">Sale Date</th>
-                <th className="px-6 py-3 text-left">Client</th>
-                <th className="px-6 py-3 text-left">Delivery Address</th>
-                <th className="px-6 py-3 text-left">Delivery Date</th>
-                <th className="px-6 py-3 text-left">Total</th>
-                <th className="px-6 py-3 text-left">Status</th>
-                <th className="px-6 py-3 text-left">Payment</th>
-                <th className="px-6 py-3 text-left">Actions</th>
+                <th 
+                  className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
+                  onClick={() => handleSort('client')}
+                >
+                  Cliente {getSortIcon('client')}
+                </th>
+                <th 
+                  className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
+                  onClick={() => handleSort('delivery_address')}
+                >
+                  Dirección {getSortIcon('delivery_address')}
+                </th>
+                <th 
+                  className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
+                  onClick={() => handleSort('sale_date')}
+                >
+                  Fecha de Venta {getSortIcon('sale_date')}
+                </th>
+                <th 
+                  className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
+                  onClick={() => handleSort('delivery_date')}
+                >
+                  Fecha de Entrega {getSortIcon('delivery_date')}
+                </th>
+                <th 
+                  className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
+                  onClick={() => handleSort('total_amount')}
+                >
+                  Total {getSortIcon('total_amount')}
+                </th>
+                <th 
+                  className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
+                  onClick={() => handleSort('payment_status')}
+                >
+                  Estado de Pago {getSortIcon('payment_status')}
+                </th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  Acciones
+                </th>
               </tr>
             </thead>
             <tbody>
               {isLoading ? (
                 <tr>
-                  <td colSpan="8" className="px-6 py-4 text-center">
-                    Loading...
+                  <td colSpan="7" className="px-6 py-4 text-center">
+                    <div className="flex justify-center items-center space-x-2">
+                      <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-gray-900"></div>
+                      <span>Cargando...</span>
+                    </div>
                   </td>
                 </tr>
               ) : sales.length === 0 ? (
                 <tr>
-                  <td colSpan="8" className="px-6 py-4 text-center">
-                    No sales found
+                  <td colSpan="7" className="px-6 py-4 text-center">
+                    No se encontraron ventas
                   </td>
                 </tr>
               ) : (
                 sales.map((sale) => (
                   <tr key={sale.id} className="border-t">
-                    <td className="px-6 py-4">
-                      {formatDate(sale.sale_date)}
-                    </td>
                     <td className="px-6 py-4">{sale.client?.name}</td>
                     <td className="px-6 py-4">
                       {[
                         sale.delivery_address?.street_address,
-                        sale.delivery_address?.neighborhood,
-                        sale.delivery_address?.borough
+                        sale.delivery_address?.boroughs?.name,
+                        sale.delivery_address?.neighborhoods?.name
                       ].filter(Boolean).join(' - ')}
+                    </td>
+                    <td className="px-6 py-4">
+                      {formatDate(sale.sale_date)}
                     </td>
                     <td className="px-6 py-4">
                       {formatDate(sale.delivery_date)}
@@ -855,30 +952,16 @@ function SalesManagement() {
                     </td>
                     <td className="px-6 py-4">
                       <span className={`px-2 py-1 rounded text-sm ${
-                        sale.status === 'completed' 
-                          ? 'bg-green-100 text-green-800' 
-                          : 'bg-yellow-100 text-yellow-800'
-                      }`}>
-                        {sale.status}
-                      </span>
-                    </td>
-                    <td className="px-6 py-4">
-                      <span className={`px-2 py-1 rounded text-sm ${
                         sale.payment_status === 'paid' 
                           ? 'bg-green-100 text-green-800'
-                          : sale.payment_status === 'cancelled'
-                          ? 'bg-red-100 text-red-800'
-                          : 'bg-yellow-100 text-yellow-800'
+                          : sale.payment_status === 'pending'
+                          ? 'bg-yellow-100 text-yellow-800'
+                          : 'bg-red-100 text-red-800'
                       }`}>
                         {sale.payment_status}
                       </span>
-                      {sale.payment_method && (
-                        <div className="text-sm text-gray-500 mt-1">
-                          {sale.payment_method.name}
-                        </div>
-                      )}
                     </td>
-                    <td className="px-6 py-4">
+                    <td className="px-6 py-4 space-x-2">
                       <Button
                         variant="ghost"
                         size="sm"
