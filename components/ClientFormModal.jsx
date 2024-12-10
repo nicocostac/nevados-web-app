@@ -374,10 +374,16 @@ export default function ClientFormModal({
   };
 
   const openInGoogleMaps = (address) => {
+    // Construct full address string
+    const fullAddress = `${address.street_address}, ${address.boroughs?.name}${address.neighborhoods?.name ? `, ${address.neighborhoods.name}` : ''}, Santiago, Chile`;
+    const encodedAddress = encodeURIComponent(fullAddress);
+
     if (address.latitude && address.longitude) {
-      const fullAddress = `${address.street_address}, ${address.boroughs?.name}${address.neighborhoods?.name ? `, ${address.neighborhoods.name}` : ''}, Chile`;
-      const encodedAddress = encodeURIComponent(fullAddress);
-      window.open(`https://www.google.com/maps/search/?api=1&query=${encodedAddress}&query_place_id=${address.latitude},${address.longitude}`, '_blank');
+      // Open using coordinates with address label for the pin
+      window.open(`https://www.google.com/maps/search/${encodedAddress}/@${address.latitude},${address.longitude},17z`, '_blank');
+    } else {
+      // Fallback to address search if coordinates are not available
+      window.open(`https://www.google.com/maps/search/?api=1&query=${encodedAddress}`, '_blank');
     }
   };
 

@@ -772,6 +772,70 @@ $$;
 
 
 --
+-- Name: create_sale_with_items(uuid, timestamp with time zone, timestamp with time zone, uuid, numeric, text, jsonb[], text, uuid, timestamp with time zone, text); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.create_sale_with_items(p_client_id uuid, p_sale_date timestamp with time zone, p_delivery_date timestamp with time zone, p_delivery_address_id uuid, p_total_amount numeric, p_notes text, p_items jsonb[], p_payment_status text, p_payment_method_id uuid, p_payment_date timestamp with time zone, p_payment_notes text) RETURNS uuid
+    LANGUAGE plpgsql SECURITY DEFINER
+    AS $$
+DECLARE
+    v_sale_id uuid;
+    v_item jsonb;
+BEGIN
+    -- Insert the sale
+    INSERT INTO sales (
+        client_id,
+        sale_date,
+        delivery_date,
+        delivery_address_id,
+        total_amount,
+        notes,
+        payment_status,
+        payment_method_id,
+        payment_date,
+        payment_notes
+    ) VALUES (
+        p_client_id,
+        p_sale_date,
+        p_delivery_date,
+        p_delivery_address_id,
+        p_total_amount,
+        p_notes,
+        p_payment_status,
+        p_payment_method_id,
+        p_payment_date,
+        p_payment_notes
+    )
+    RETURNING id INTO v_sale_id;
+
+    -- Insert sale items
+    FOR i IN 1..array_length(p_items, 1) LOOP
+        v_item := p_items[i];
+        INSERT INTO sale_items (
+            sale_id,
+            product_id,
+            item_number,
+            quantity,
+            unit_price,
+            total_price,
+            discount_percentage
+        ) VALUES (
+            v_sale_id,
+            (v_item->>'productId')::uuid,
+            i,
+            COALESCE((v_item->>'quantity')::numeric, 0),
+            COALESCE((v_item->>'unitPrice')::numeric, 0),
+            COALESCE((v_item->>'totalPrice')::numeric, 0),
+            COALESCE((v_item->>'discountPercentage')::numeric, 0)
+        );
+    END LOOP;
+
+    RETURN v_sale_id;
+END;
+$$;
+
+
+--
 -- Name: ensure_single_default_address(); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -3387,6 +3451,12 @@ COPY auth.audit_log_entries (instance_id, id, payload, created_at, ip_address) F
 00000000-0000-0000-0000-000000000000	364ec4b5-8cc6-4c31-af0e-6e0f1cf298a7	{"action":"token_revoked","actor_id":"36837910-176b-48b8-9a49-e2bc08431bd9","actor_username":"nicocostac+nevados@gmail.com","actor_via_sso":false,"log_type":"token"}	2024-12-09 19:52:25.961334+00	
 00000000-0000-0000-0000-000000000000	26c03e55-88f6-4a11-942f-aeae8fef5079	{"action":"token_refreshed","actor_id":"36837910-176b-48b8-9a49-e2bc08431bd9","actor_username":"nicocostac+nevados@gmail.com","actor_via_sso":false,"log_type":"token"}	2024-12-10 13:27:29.951912+00	
 00000000-0000-0000-0000-000000000000	d77e8f51-2dd7-442a-8c22-879a3cb491cc	{"action":"token_revoked","actor_id":"36837910-176b-48b8-9a49-e2bc08431bd9","actor_username":"nicocostac+nevados@gmail.com","actor_via_sso":false,"log_type":"token"}	2024-12-10 13:27:29.967507+00	
+00000000-0000-0000-0000-000000000000	7a6f6f04-9214-4677-9d00-4827e4db5a6e	{"action":"token_refreshed","actor_id":"36837910-176b-48b8-9a49-e2bc08431bd9","actor_username":"nicocostac+nevados@gmail.com","actor_via_sso":false,"log_type":"token"}	2024-12-10 14:28:50.291935+00	
+00000000-0000-0000-0000-000000000000	d30ac28f-7b33-4ae2-a47b-7e6852f32cd3	{"action":"token_revoked","actor_id":"36837910-176b-48b8-9a49-e2bc08431bd9","actor_username":"nicocostac+nevados@gmail.com","actor_via_sso":false,"log_type":"token"}	2024-12-10 14:28:50.29771+00	
+00000000-0000-0000-0000-000000000000	94073718-d6a6-4757-b0de-b2cc9dc5fc76	{"action":"token_refreshed","actor_id":"36837910-176b-48b8-9a49-e2bc08431bd9","actor_username":"nicocostac+nevados@gmail.com","actor_via_sso":false,"log_type":"token"}	2024-12-10 15:27:54.933336+00	
+00000000-0000-0000-0000-000000000000	9986d56a-5717-496a-82f9-e8661b379016	{"action":"token_revoked","actor_id":"36837910-176b-48b8-9a49-e2bc08431bd9","actor_username":"nicocostac+nevados@gmail.com","actor_via_sso":false,"log_type":"token"}	2024-12-10 15:27:54.936565+00	
+00000000-0000-0000-0000-000000000000	e3867a76-c031-4cbd-98a2-980f06f10143	{"action":"token_refreshed","actor_id":"36837910-176b-48b8-9a49-e2bc08431bd9","actor_username":"nicocostac+nevados@gmail.com","actor_via_sso":false,"log_type":"token"}	2024-12-10 16:26:03.622628+00	
+00000000-0000-0000-0000-000000000000	96da1e41-485d-4284-9eee-d57565f7edf6	{"action":"token_revoked","actor_id":"36837910-176b-48b8-9a49-e2bc08431bd9","actor_username":"nicocostac+nevados@gmail.com","actor_via_sso":false,"log_type":"token"}	2024-12-10 16:26:03.624314+00	
 \.
 
 
@@ -3498,7 +3568,10 @@ COPY auth.refresh_tokens (instance_id, id, token, user_id, revoked, created_at, 
 00000000-0000-0000-0000-000000000000	126	m4jcZn23C1bo27mC0F8nSg	36837910-176b-48b8-9a49-e2bc08431bd9	t	2024-12-09 17:52:15.080962+00	2024-12-09 18:52:20.943297+00	Kpai9yJ1md7bogeUfwxyZA	db09d6bd-540b-4c85-8968-a610d88dbe23
 00000000-0000-0000-0000-000000000000	127	tPj1SimfKe7JVdBqn48OaA	36837910-176b-48b8-9a49-e2bc08431bd9	t	2024-12-09 18:52:20.944599+00	2024-12-09 19:52:25.962455+00	m4jcZn23C1bo27mC0F8nSg	db09d6bd-540b-4c85-8968-a610d88dbe23
 00000000-0000-0000-0000-000000000000	128	uoz-gxr43pVGqEkod1-gog	36837910-176b-48b8-9a49-e2bc08431bd9	t	2024-12-09 19:52:25.966797+00	2024-12-10 13:27:29.969354+00	tPj1SimfKe7JVdBqn48OaA	db09d6bd-540b-4c85-8968-a610d88dbe23
-00000000-0000-0000-0000-000000000000	129	BY6m0VVPVZeEWuFC3QRlzw	36837910-176b-48b8-9a49-e2bc08431bd9	f	2024-12-10 13:27:29.977418+00	2024-12-10 13:27:29.977418+00	uoz-gxr43pVGqEkod1-gog	db09d6bd-540b-4c85-8968-a610d88dbe23
+00000000-0000-0000-0000-000000000000	129	BY6m0VVPVZeEWuFC3QRlzw	36837910-176b-48b8-9a49-e2bc08431bd9	t	2024-12-10 13:27:29.977418+00	2024-12-10 14:28:50.298218+00	uoz-gxr43pVGqEkod1-gog	db09d6bd-540b-4c85-8968-a610d88dbe23
+00000000-0000-0000-0000-000000000000	130	00GZJsl0KLJkjXlgXGB91Q	36837910-176b-48b8-9a49-e2bc08431bd9	t	2024-12-10 14:28:50.300707+00	2024-12-10 15:27:54.93709+00	BY6m0VVPVZeEWuFC3QRlzw	db09d6bd-540b-4c85-8968-a610d88dbe23
+00000000-0000-0000-0000-000000000000	131	pYNDBCxOtVIPeUtqdEAnpg	36837910-176b-48b8-9a49-e2bc08431bd9	t	2024-12-10 15:27:54.939677+00	2024-12-10 16:26:03.624825+00	00GZJsl0KLJkjXlgXGB91Q	db09d6bd-540b-4c85-8968-a610d88dbe23
+00000000-0000-0000-0000-000000000000	132	ZPSx16iuiWFEpZVlt9SYJw	36837910-176b-48b8-9a49-e2bc08431bd9	f	2024-12-10 16:26:03.626945+00	2024-12-10 16:26:03.626945+00	pYNDBCxOtVIPeUtqdEAnpg	db09d6bd-540b-4c85-8968-a610d88dbe23
 \.
 
 
@@ -3596,7 +3669,7 @@ COPY auth.sessions (id, user_id, created_at, updated_at, factor_id, aal, not_aft
 6fb858d0-e4de-4622-847f-a730665ee4ff	36837910-176b-48b8-9a49-e2bc08431bd9	2024-11-19 16:36:13.103975+00	2024-11-19 16:36:13.103975+00	\N	aal1	\N	\N	Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Safari/605.1.15	104.28.47.230	\N
 04a70cd0-dbae-44a5-9d2c-a566d9aa5c3b	36837910-176b-48b8-9a49-e2bc08431bd9	2024-11-19 16:45:15.00192+00	2024-11-25 16:05:20.46177+00	\N	aal1	\N	2024-11-25 16:05:20.4617	Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Safari/605.1.15	146.75.208.29	\N
 d57ce5bf-6ae1-4cab-ad62-d3f360bd0796	36837910-176b-48b8-9a49-e2bc08431bd9	2024-11-22 04:39:38.239729+00	2024-11-22 04:39:38.239729+00	\N	aal1	\N	\N	Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Safari/605.1.15	172.225.84.100	\N
-db09d6bd-540b-4c85-8968-a610d88dbe23	36837910-176b-48b8-9a49-e2bc08431bd9	2024-12-06 18:57:55.284277+00	2024-12-10 13:27:29.988917+00	\N	aal1	\N	2024-12-10 13:27:29.987548	Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Safari/605.1.15	138.84.34.238	\N
+db09d6bd-540b-4c85-8968-a610d88dbe23	36837910-176b-48b8-9a49-e2bc08431bd9	2024-12-06 18:57:55.284277+00	2024-12-10 16:26:03.629892+00	\N	aal1	\N	2024-12-10 16:26:03.629811	Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Safari/605.1.15	98.97.129.79	\N
 \.
 
 
@@ -3622,7 +3695,7 @@ COPY auth.sso_providers (id, resource_id, created_at, updated_at) FROM stdin;
 
 COPY auth.users (instance_id, id, aud, role, email, encrypted_password, email_confirmed_at, invited_at, confirmation_token, confirmation_sent_at, recovery_token, recovery_sent_at, email_change_token_new, email_change, email_change_sent_at, last_sign_in_at, raw_app_meta_data, raw_user_meta_data, is_super_admin, created_at, updated_at, phone, phone_confirmed_at, phone_change, phone_change_token, phone_change_sent_at, email_change_token_current, email_change_confirm_status, banned_until, reauthentication_token, reauthentication_sent_at, is_sso_user, deleted_at, is_anonymous) FROM stdin;
 00000000-0000-0000-0000-000000000000	dc1406e9-fcd3-40e2-b960-152af5211b8b	authenticated	authenticated	nicocostac@gmail.com	$2a$10$iKZlMebIC.i4U1PSCRV4TOS2mILqTz32LeEAmH9HWWjYfxj/oOajS	2024-11-05 23:00:45.204697+00	\N		\N		\N			\N	2024-11-07 22:04:59.56634+00	{"provider": "email", "providers": ["email"]}	{"sub": "dc1406e9-fcd3-40e2-b960-152af5211b8b", "email": "nicocostac@gmail.com", "last_name": "asdasd", "first_name": "asdasd", "email_verified": false, "phone_verified": false}	\N	2024-11-05 22:59:10.30863+00	2024-11-07 22:04:59.568722+00	\N	\N			\N		0	\N		\N	f	\N	f
-00000000-0000-0000-0000-000000000000	36837910-176b-48b8-9a49-e2bc08431bd9	authenticated	authenticated	nicocostac+nevados@gmail.com	$2a$10$uaUKe9lknKJHbgLUMp8GOOqS3KPLEa9vNrnz/3HQr3cUBWuMUg/cu	2024-11-05 20:23:34.236033+00	\N		\N		\N			\N	2024-12-06 18:57:55.283711+00	{"provider": "email", "providers": ["email"]}	{"sub": "36837910-176b-48b8-9a49-e2bc08431bd9", "email": "nicocostac+nevados@gmail.com", "email_verified": false, "phone_verified": false}	\N	2024-11-05 20:23:16.594568+00	2024-12-10 13:27:29.981084+00	\N	\N			\N		0	\N		\N	f	\N	f
+00000000-0000-0000-0000-000000000000	36837910-176b-48b8-9a49-e2bc08431bd9	authenticated	authenticated	nicocostac+nevados@gmail.com	$2a$10$uaUKe9lknKJHbgLUMp8GOOqS3KPLEa9vNrnz/3HQr3cUBWuMUg/cu	2024-11-05 20:23:34.236033+00	\N		\N		\N			\N	2024-12-06 18:57:55.283711+00	{"provider": "email", "providers": ["email"]}	{"sub": "36837910-176b-48b8-9a49-e2bc08431bd9", "email": "nicocostac+nevados@gmail.com", "email_verified": false, "phone_verified": false}	\N	2024-11-05 20:23:16.594568+00	2024-12-10 16:26:03.628515+00	\N	\N			\N		0	\N		\N	f	\N	f
 \.
 
 
@@ -3654,7 +3727,8 @@ be87ece8-a46d-430e-9e94-8abe40668575	Calera de Tango	active	2024-11-22 22:22:19.
 --
 
 COPY public.client_addresses (id, client_id, street_address, additional_info, is_default, created_at, updated_at, borough_id, neighborhood_id, latitude, longitude, contact_person) FROM stdin;
-4bbfc4a6-92f7-474d-97fc-ef43d3001aac	bdee04b5-88d3-4f0c-a5f6-88c37ace1737	Presbítero Félix Zaragoza Sésmero 2731		t	2024-12-10 13:33:21.011926+00	2024-12-10 14:02:10.078977+00	1bd0af9e-f376-48ea-999d-5858cb39f9e8	\N	-33.59498070	-70.85101270	Adalexis López
+3cc33a63-d33c-49d4-9de0-5a3d9ca3db53	e3739229-0a2c-4b7a-96fc-7f9e62e3befd	Condominio El Curato parcela 75		t	2024-12-10 14:37:19.854198+00	2024-12-10 14:41:33.443446+00	186604c8-a965-4bd0-852b-1055f4ef9209	\N	-33.58104580	-70.90112650	Camilo Salazar
+82701a5c-7c01-484e-9b05-7f1bfb239218	955eda10-ae83-45a5-91bf-ec1d23e7028d	Miraflores 1337	Casa 35	t	2024-12-10 14:43:16.734287+00	2024-12-10 14:43:16.734287+00	1bd0af9e-f376-48ea-999d-5858cb39f9e8	0f84a81f-6f4d-430e-9597-03f70dd4e9d9	-33.60044250	-70.86419660	Carlos Chandía
 14d0c8e2-98da-44a3-9594-37cf3de28944	410d48c2-1357-4471-9a86-ca260dd6f278	Los Maquis 1672		t	2024-12-10 13:35:28.094162+00	2024-12-10 14:02:10.953107+00	186604c8-a965-4bd0-852b-1055f4ef9209	\N	-33.56896670	-70.80653680	Adriana Goza
 25b2a515-1623-408b-8bd8-c1211d05af99	dfc19e2e-b24c-4e7a-9fd8-c7fe18f237cb	José Bernardo Suárez 1069		t	2024-12-10 13:38:55.172203+00	2024-12-10 14:02:11.815791+00	1bd0af9e-f376-48ea-999d-5858cb39f9e8	\N	-33.60809960	-70.86511600	Alejandra Duarte
 1e2ee825-0f79-452b-92eb-5259ea0e7436	fddec35e-5fc5-443b-8249-49835c4f9da8	Miraflores 1337	Casa 145	t	2024-12-10 13:41:55.071575+00	2024-12-10 14:02:12.62131+00	1bd0af9e-f376-48ea-999d-5858cb39f9e8	\N	-33.60043840	-70.86423010	Alejandra León
@@ -3666,6 +3740,48 @@ ac97850e-a809-44fa-a5a7-a2d79220a7a6	aa2056b9-af4f-42ac-a3e0-50fac4f9f51c	Mirafl
 66b809e0-cdd9-49b6-bf81-738494f57889	2d3fd002-9602-4920-9c9d-3abc738d4feb	Totoralillo 235		t	2024-12-10 14:07:21.46695+00	2024-12-10 14:13:29.313666+00	96d99b1a-95fe-45f5-9c8f-d5d7439912a0	\N	-33.52545730	-70.78750800	Ángela Aguayo
 109c6864-55e7-409a-9035-a261ef1f33ac	07042a4b-93af-4876-9392-2610ec62a209	Alberto Blest Gana 554		t	2024-12-10 14:08:03.202421+00	2024-12-10 14:13:30.036474+00	186604c8-a965-4bd0-852b-1055f4ef9209	\N	-33.56357340	-70.79934940	Angélica Jiménez
 37a897f5-424a-4849-9929-428bfed1396b	0562054e-e962-42da-99f4-9fa70862ab4e	Miraflores 1337	Casa 74	t	2024-12-10 14:09:04.429009+00	2024-12-10 14:13:30.537809+00	1bd0af9e-f376-48ea-999d-5858cb39f9e8	0f84a81f-6f4d-430e-9597-03f70dd4e9d9	-33.60044250	-70.86419660	Aracely González
+72c9359c-07a2-4fe1-b9f4-edaf2fd4257e	920d7b35-776b-41d4-bda2-b550279dc44e	Valle del Elqui 1978		t	2024-12-10 14:19:07.215352+00	2024-12-10 14:29:27.820183+00	186604c8-a965-4bd0-852b-1055f4ef9209	\N	-33.57534440	-70.80357530	Ástrid De Torres
+3aa67ef1-a493-43aa-8079-cebb14ce93bd	34b982e7-80eb-4de2-8ae1-6ad99575e610	Ottawa 938		t	2024-12-10 14:20:20.620285+00	2024-12-10 14:29:28.579313+00	1bd0af9e-f376-48ea-999d-5858cb39f9e8	\N	-33.60788280	-70.86616620	Ástrid Salinas
+87a84730-7302-4e3c-93ca-fa1297be330e	ac241d67-5a00-4360-ad52-517731d0eb22	Miraflores 506	Chilexpress	t	2024-12-10 14:21:31.454955+00	2024-12-10 14:29:29.316363+00	1bd0af9e-f376-48ea-999d-5858cb39f9e8	\N	-33.60206790	-70.85651950	Audie
+4a221224-388c-46a9-9f2e-bca137d6b1d9	eb07e857-8869-42cd-a652-0e2ad7ee8537	Maule 1292		t	2024-12-10 14:22:31.77674+00	2024-12-10 14:29:30.008226+00	1bd0af9e-f376-48ea-999d-5858cb39f9e8	\N	-33.60884470	-70.87102510	Bárbara González
+fb3238ee-8bde-425f-ad31-566a3b9c11fd	dabfc366-dee1-4655-a822-5b909533dbd2	Condominio Los Almendros Norte, Parcela 37	Calera de Tango Paradero 2	t	2024-12-10 14:29:20.817019+00	2024-12-10 14:29:30.820238+00	be87ece8-a46d-430e-9e94-8abe40668575	\N	-33.63138620	-70.74983380	Beatriz Baeza
+f30b2910-667f-4c12-aa13-eb0da56c45df	3368aea8-9c83-44c2-8b65-a8739ae99a85	Violeta Parra 1781		t	2024-12-10 14:34:00.909909+00	2024-12-10 14:37:41.728272+00	1bd0af9e-f376-48ea-999d-5858cb39f9e8	\N	-33.60135730	-70.87136570	Belén López
+1e680c3b-bcf0-4cbf-a249-f322c7ceeb58	25482691-aff8-44e8-a26a-df88cca75129	Calle La Cosecha 2030		t	2024-12-10 14:34:47.315488+00	2024-12-10 14:37:42.594189+00	186604c8-a965-4bd0-852b-1055f4ef9209	\N	-33.57681620	-70.80235010	Betzabé Cofré
+4398cd29-057d-4808-bf4a-ef92bdd29d0d	8c4d9d6d-8f1a-419f-aaf8-790d99324776	Óscar Castro 575		t	2024-12-10 14:35:37.057948+00	2024-12-10 14:37:43.333933+00	1bd0af9e-f376-48ea-999d-5858cb39f9e8	\N	-33.60857140	-70.86506620	Bryan Álvarez
+d9965df9-2d3e-4979-85ab-027e23b2a8f4	3fbf1be6-0473-48ab-aa83-b02a77aa9466	Pasaje Herrera Casa 4		t	2024-12-10 14:45:09.674742+00	2024-12-10 14:45:09.674742+00	be87ece8-a46d-430e-9e94-8abe40668575	\N	-33.62846830	-70.77319920	Carlos Herrera
+4bbfc4a6-92f7-474d-97fc-ef43d3001aac	bdee04b5-88d3-4f0c-a5f6-88c37ace1737	Presbítero Félix Zaragoza Sésmero 2731		t	2024-12-10 13:33:21.011926+00	2024-12-10 14:53:02.255882+00	1bd0af9e-f376-48ea-999d-5858cb39f9e8	\N	-33.59498070	-70.85101270	Adalexis López
+be6a4465-61ff-4517-82ab-b1bbe7171bee	68db6b79-229c-4afc-abc9-a054a0ac0875	Lonquén Sur paradero 24 1/2 Condominio Los Copihues p.24		t	2024-12-10 14:53:38.581342+00	2024-12-10 14:53:38.581342+00	4bf42445-430d-4f23-928e-8a83e69ca9c9	3cb885ba-6fba-4cc1-8c93-d43e74b289aa	-33.64735230	-70.82231580	
+5059cff5-a935-4d23-8e3a-d2e9c926fd6d	8a7fb007-01af-4bb0-be0d-7c08e97de263	Miraflores 1337	Casa 21	t	2024-12-10 15:40:04.186145+00	2024-12-10 15:40:04.186145+00	1bd0af9e-f376-48ea-999d-5858cb39f9e8	0f84a81f-6f4d-430e-9597-03f70dd4e9d9	-33.60044250	-70.86419660	Cintia Jerez
+5abb373a-f427-40bc-a126-08ea6204ee08	471b4294-954c-473b-a4ae-7dbc22e015fa	Vicuña Mackenna 838  Condominio Las Vertientes III		f	2024-12-10 14:56:00.185511+00	2024-12-10 14:57:33.419976+00	1bd0af9e-f376-48ea-999d-5858cb39f9e8	\N	-33.61213320	-70.86674750	Carola San Martín
+7f62a56a-493c-4f21-a45a-a70a406cb60e	b37ed689-015e-4707-808f-167bdcab5069	Condominio Los Almendros Sur parcela 22		t	2024-12-10 15:00:47.796734+00	2024-12-10 15:00:47.796734+00	be87ece8-a46d-430e-9e94-8abe40668575	\N	-33.63182600	-70.74963430	Carolina Salcedo
+92e237c7-52fe-4ba1-a2a6-6353d9872ebc	41303b5a-6f07-4d8d-906d-30866333c8a1	Santa Herminia 753 Condominio Los Esteros Casa 80		t	2024-12-10 15:03:19.591157+00	2024-12-10 15:03:19.591157+00	186604c8-a965-4bd0-852b-1055f4ef9209	\N	-33.56865520	-70.82980330	Carolina Samaritani
+e18c1785-a90b-4b91-ad57-01332ecb441b	46e01b27-d86b-4d40-bca0-6fe207a59961	Hospital de Peñaflor	 Dirección	t	2024-12-10 15:04:45.530305+00	2024-12-10 15:04:45.530305+00	1bd0af9e-f376-48ea-999d-5858cb39f9e8	\N	-33.61016430	-70.90376060	Carolina San Martín
+49f84764-4fc5-4c7c-8aaa-038bd9be1448	ac39ce70-ea62-42e9-9196-20ecebc86b49	Av. Jorge Montt 535		t	2024-12-10 15:07:13.696452+00	2024-12-10 15:07:13.696452+00	1bd0af9e-f376-48ea-999d-5858cb39f9e8	\N	-33.59756670	-70.85400920	Carolina Vidal
+4c0f33b0-b8e6-4411-940b-90c6488d7fc0	f306915d-e80d-4dea-a8ea-7ab490d62257	Miraflores 1337	Casa 91	t	2024-12-10 15:26:27.723954+00	2024-12-10 15:26:27.723954+00	1bd0af9e-f376-48ea-999d-5858cb39f9e8	0f84a81f-6f4d-430e-9597-03f70dd4e9d9	-33.60044250	-70.86419660	Caroly Flores
+7e836e92-5213-473c-b706-8a4f64a118b0	4903ceb5-1ab4-4c55-b712-15d6f04a00bb	Lonquén Sur paradero 37 1/2 Sitio 39		t	2024-12-10 15:28:14.378243+00	2024-12-10 15:28:14.378243+00	4bf42445-430d-4f23-928e-8a83e69ca9c9	3cb885ba-6fba-4cc1-8c93-d43e74b289aa	-33.66054670	-70.83444590	Cecilia Gamboa
+b40c1d9e-373b-43cd-8e8e-fb58b7a66851	0bdd6a67-7511-4b8b-89c3-be04015d2984	San Marcos 2064		t	2024-12-10 15:30:23.657229+00	2024-12-10 15:30:23.657229+00	186604c8-a965-4bd0-852b-1055f4ef9209	\N	-33.57323850	-70.80791800	Cecilia Herrera
+dc48b6de-ce62-41d5-a4d9-25a1de13c608	6272cc76-9378-48b0-83a1-c68e7855fc29	Condominio San José parcela 21		f	2024-12-10 15:31:51.451623+00	2024-12-10 15:31:51.451623+00	4bf42445-430d-4f23-928e-8a83e69ca9c9	9101c473-d055-4d98-a03b-45927804b672	-33.66608600	-70.87045150	Christopher Hermosilla
+08c8d7c8-0501-4124-8a43-5edf33e6ff50	b73beb0b-a8f4-48c1-a633-be19ed9ef123	Condominio Los Copihues	Parcela 22	f	2024-12-10 15:36:53.440125+00	2024-12-10 15:36:53.440125+00	4bf42445-430d-4f23-928e-8a83e69ca9c9	3cb885ba-6fba-4cc1-8c93-d43e74b289aa	-33.64735230	-70.82231580	Cinthya Rojo
+2d28c6ef-3ae8-45e3-915d-27694951215c	b0fdd82b-0121-4e25-85fb-6c333d3f990d	Miraflores 1337	Casa 117	t	2024-12-10 15:42:59.135477+00	2024-12-10 15:42:59.135477+00	1bd0af9e-f376-48ea-999d-5858cb39f9e8	0f84a81f-6f4d-430e-9597-03f70dd4e9d9	-33.60044250	-70.86419660	Claudia Díaz
+c55645c9-1e48-4cf2-852c-58dd7a19db87	719b48ef-f16b-4fdd-99a8-28e622239899	Siglo XX 1566		f	2024-12-10 15:43:56.750438+00	2024-12-10 15:44:06.691577+00	96d99b1a-95fe-45f5-9c8f-d5d7439912a0	\N	-33.51643660	-70.78263500	Claudia González Vargas
+6761dc2e-b1a8-48d5-9cac-bb4f9208af7e	785db10b-61bd-486d-be05-411690a1d87b	C° Melipilla 14200 Cond. El Curato	parcela 28	t	2024-12-10 15:47:02.745798+00	2024-12-10 15:47:02.745798+00	186604c8-a965-4bd0-852b-1055f4ef9209	\N	-33.58159750	-70.82847060	Claudia Veli
+80a3d9ea-5cfb-4dd1-9fac-1983eeb5296f	2cd05dec-b15e-4ebd-8d28-a126ade84fde	Av. La Laguna 3581 Condominio Los Veleros	Casa 34	f	2024-12-10 15:58:31.967914+00	2024-12-10 15:58:31.967914+00	186604c8-a965-4bd0-852b-1055f4ef9209	\N	-33.56138410	-70.83227210	Claudio Fernández
+ad53d887-9907-46a6-b774-07e47fd950e6	bd64a5ba-c0a5-462c-afec-0fd5b5c4e987	Zoila Yamerich 1991		t	2024-12-10 16:11:31.200228+00	2024-12-10 16:11:31.200228+00	186604c8-a965-4bd0-852b-1055f4ef9209	\N	-33.57569970	-70.80329660	Cristián Opazo
+18782990-418e-49fa-bd81-649251834d89	bd64a5ba-c0a5-462c-afec-0fd5b5c4e987	Parque Conguillío 1210		f	2024-12-10 16:11:58.480345+00	2024-12-10 16:11:58.480345+00	186604c8-a965-4bd0-852b-1055f4ef9209	\N	-33.57410290	-70.80012200	Cristián Opazo
+8168ea88-169f-4129-af53-ccd9f980bcc0	0d93a064-5b9f-4780-93d2-50888452d781	C° Valparaíso s/n Club de Pádel Del Sol		t	2024-12-10 16:17:20.741053+00	2024-12-10 16:17:20.741053+00	186604c8-a965-4bd0-852b-1055f4ef9209	\N	-33.55752540	-70.82642470	Cristóbal Bustos
+8141598c-d776-410c-b122-9edb85bde978	f55d0e09-42f7-4726-a58b-987cb63f49de	Av. Alcalde José Luis Infante Larraín 1279 Condominio Barrio Norte 	Casa 102	t	2024-12-10 16:19:04.31095+00	2024-12-10 16:19:04.31095+00	96d99b1a-95fe-45f5-9c8f-d5d7439912a0	84eac37e-b169-4ec1-959c-1e24f6d46c27	-33.56021220	-70.78407480	Rodrigo Peñaloza
+2a387136-d914-4833-a2b9-c7161ea3e095	0e9b8159-8b6b-4a54-84b3-61af7f83130a	Av. Alcalde José del Valle Sur 504		t	2024-12-10 16:19:50.938141+00	2024-12-10 16:19:50.938141+00	1bd0af9e-f376-48ea-999d-5858cb39f9e8	\N	-33.59562420	-70.85215320	Felipe Sánchez
+58242a28-604f-415d-9f97-46cd6fdf5adc	764063f5-7028-498b-b5e3-535bdf78dd11	Arturo Prat 2, Congelados Refrigerato	Congelados Refrigerato	f	2024-12-10 16:24:06.296184+00	2024-12-10 16:24:06.296184+00	1bd0af9e-f376-48ea-999d-5858cb39f9e8	\N	-33.60989720	-70.90167800	Leslie Espinoza
+b415532d-d0ce-4658-8d11-1fb5b61cbdf3	bc4a096f-f1d8-415e-bd1c-4de41b0eaa8e	Acapulco 1524		t	2024-12-10 16:25:12.171364+00	2024-12-10 16:25:12.171364+00	96d99b1a-95fe-45f5-9c8f-d5d7439912a0	\N	-33.49319660	-70.73765900	Felipe Escudero
+2a9794b8-f79d-49ab-8938-6aee9d7efedb	f2e1c1cf-d6f5-4630-8db7-d4c447f07599	Av. Alcalde José Luis Infante Larraín 1492 Condominio Barrio Oriente I 	Casa 30	t	2024-12-10 16:27:09.102637+00	2024-12-10 16:27:09.102637+00	96d99b1a-95fe-45f5-9c8f-d5d7439912a0	84eac37e-b169-4ec1-959c-1e24f6d46c27	-33.55995290	-70.78132300	Maricette Lagos
+74759a58-61e3-428a-a6b2-b9759dcfe0cf	40c94b4d-140b-4089-91d0-5112f7e85999	AV. Alcalde José Luis Infante Larraín 1701 Cond. Barrio Central 	Casa 102	t	2024-12-10 16:28:35.16479+00	2024-12-10 16:28:35.16479+00	96d99b1a-95fe-45f5-9c8f-d5d7439912a0	84eac37e-b169-4ec1-959c-1e24f6d46c27	-33.56163970	-70.77836910	Ingrid Farías
+82a69900-9b1e-43b1-add0-4deb79019617	4658676d-d736-4d9d-9e7d-8d42478617e3	Av. Alcalde José Luis Infante Larraín 1701 Cond. Barrio Central 	Casa 147	t	2024-12-10 16:29:17.347088+00	2024-12-10 16:29:17.347088+00	96d99b1a-95fe-45f5-9c8f-d5d7439912a0	84eac37e-b169-4ec1-959c-1e24f6d46c27	-33.56163970	-70.77836910	Giovanna Gutiérrez
+5ea99026-a760-4977-aadb-7edf545c96fe	5363aad9-a6f4-486e-9753-c2f6e4037988	Av. Alcalde José Luis Infante Larraín 1701 Cond. Barrio Central	Casa 42	t	2024-12-10 16:29:57.911117+00	2024-12-10 16:29:57.911117+00	96d99b1a-95fe-45f5-9c8f-d5d7439912a0	84eac37e-b169-4ec1-959c-1e24f6d46c27	-33.56163970	-70.77836910	Patricia Barrera
+cecec6e4-de82-4208-be4f-3ad3a3c4d4c3	32e9b4c2-d072-4ffb-843b-914b15241adf	Av. Alcalde José Luis Infante Larraín 1900 Cond. Patagonia I 	Casa 104	t	2024-12-10 16:30:41.084136+00	2024-12-10 16:30:41.084136+00	96d99b1a-95fe-45f5-9c8f-d5d7439912a0	84eac37e-b169-4ec1-959c-1e24f6d46c27	-33.56181030	-70.77644470	Gloria Ambiado
+498c1dff-78c9-4549-9022-4337aa788ca7	f4a93d1f-b737-4a6e-963c-f187e2d1d79e	Av. Alcalde José Luis Infante Larraín 1900 Cond. Patagonia I	Casa 38	t	2024-12-10 16:31:04.897275+00	2024-12-10 16:31:04.897275+00	96d99b1a-95fe-45f5-9c8f-d5d7439912a0	84eac37e-b169-4ec1-959c-1e24f6d46c27	-33.56181030	-70.77644470	Ivanna Gutiérrez
+c654c814-c034-4081-9854-47653f70186b	b4c107a5-263c-4db3-b920-a6edb283301c	Av. Balmaceda 173	Ferretería Miraflor	f	2024-12-10 16:32:15.515888+00	2024-12-10 16:32:15.515888+00	1bd0af9e-f376-48ea-999d-5858cb39f9e8	\N	-33.60160840	-70.85003470	Valeria Wall
+bcf33179-a7c7-4898-bb08-db657d02e6c8	ff6e6e32-e38b-4371-95a2-5570e03dbd13	Av. Balmaceda 7801	Jumptastic	t	2024-12-10 16:33:21.504089+00	2024-12-10 16:33:21.504089+00	4bf42445-430d-4f23-928e-8a83e69ca9c9	\N	-33.65164060	-70.89369810	Romina Espinoza
+32a3bf93-cbe8-4900-9a5e-b7948f414860	1b229fd4-6b41-486d-9490-2a329d55ca0e	Avenida Miraflores 2123	Local A: Cervecería Raíces	f	2024-12-10 16:39:32.861252+00	2024-12-10 16:39:32.861252+00	1bd0af9e-f376-48ea-999d-5858cb39f9e8	\N	-33.59874120	-70.87310180	Sebastián Barraza
 \.
 
 
@@ -3674,6 +3790,7 @@ ac97850e-a809-44fa-a5a7-a2d79220a7a6	aa2056b9-af4f-42ac-a3e0-50fac4f9f51c	Mirafl
 --
 
 COPY public.client_prices (id, client_id, product_id, discount_percentage, final_price, notes, created_at, updated_at, start_date, end_date) FROM stdin;
+bdc73f66-2e27-43d1-9978-5009ccdddc48	1b229fd4-6b41-486d-9490-2a329d55ca0e	aa5fced8-b36c-4196-9bcf-a36bb2204cd3	64.29	1250.00		2024-12-10 16:39:33.118673+00	2024-12-10 16:39:33.118673+00	2024-01-01	\N
 \.
 
 
@@ -3693,7 +3810,6 @@ a0782090-0b4d-45ea-a968-3cd7c34f739d	wholesale	Wholesale business customers	2024
 --
 
 COPY public.clients (id, name, email, phone, notes, type_id, communication_preference, status, created_at, updated_at, created_by, is_tj, phone_2) FROM stdin;
-bdee04b5-88d3-4f0c-a5f6-88c37ace1737	Adalexis López		+56942418120		2312066a-44b2-4e6d-8cf5-1813dbc9d948	whatsapp	active	2024-12-10 13:33:20.681488+00	2024-12-10 13:33:20.681488+00	36837910-176b-48b8-9a49-e2bc08431bd9	f	\N
 410d48c2-1357-4471-9a86-ca260dd6f278	Adriana Goza		+56978445620		2312066a-44b2-4e6d-8cf5-1813dbc9d948	whatsapp	active	2024-12-10 13:35:27.950443+00	2024-12-10 13:35:27.950443+00	36837910-176b-48b8-9a49-e2bc08431bd9	f	\N
 dfc19e2e-b24c-4e7a-9fd8-c7fe18f237cb	Alejandra Duarte		+56949714601		2312066a-44b2-4e6d-8cf5-1813dbc9d948	whatsapp	active	2024-12-10 13:38:54.990451+00	2024-12-10 13:38:54.990451+00	36837910-176b-48b8-9a49-e2bc08431bd9	f	\N
 fddec35e-5fc5-443b-8249-49835c4f9da8	Alejandra León		+56986690725		2312066a-44b2-4e6d-8cf5-1813dbc9d948	whatsapp	active	2024-12-10 13:41:54.882186+00	2024-12-10 13:41:54.882186+00	36837910-176b-48b8-9a49-e2bc08431bd9	f	\N
@@ -3705,6 +3821,49 @@ c48b8200-a21f-438b-b61b-94994399d1ad	Ana María Garrido		+56958411051		2312066a-
 2d3fd002-9602-4920-9c9d-3abc738d4feb	Ángela Aguayo		+56964771723		2312066a-44b2-4e6d-8cf5-1813dbc9d948	whatsapp	active	2024-12-10 14:07:21.162824+00	2024-12-10 14:07:21.162824+00	36837910-176b-48b8-9a49-e2bc08431bd9	f	
 07042a4b-93af-4876-9392-2610ec62a209	Angélica Jiménez		+56981324858		2312066a-44b2-4e6d-8cf5-1813dbc9d948	whatsapp	active	2024-12-10 14:08:02.984819+00	2024-12-10 14:08:02.984819+00	36837910-176b-48b8-9a49-e2bc08431bd9	f	
 0562054e-e962-42da-99f4-9fa70862ab4e	Aracely González		+56975240179		2312066a-44b2-4e6d-8cf5-1813dbc9d948	whatsapp	active	2024-12-10 14:09:04.246667+00	2024-12-10 14:09:04.246667+00	36837910-176b-48b8-9a49-e2bc08431bd9	f	
+920d7b35-776b-41d4-bda2-b550279dc44e	Ástrid De Torres		+56945377199		2312066a-44b2-4e6d-8cf5-1813dbc9d948	whatsapp	active	2024-12-10 14:19:06.974824+00	2024-12-10 14:19:06.974824+00	36837910-176b-48b8-9a49-e2bc08431bd9	f	
+34b982e7-80eb-4de2-8ae1-6ad99575e610	Ástrid Salinas		+56999387143		2312066a-44b2-4e6d-8cf5-1813dbc9d948	whatsapp	active	2024-12-10 14:20:20.417709+00	2024-12-10 14:20:20.417709+00	36837910-176b-48b8-9a49-e2bc08431bd9	f	
+ac241d67-5a00-4360-ad52-517731d0eb22	Audie		+56971775598		2312066a-44b2-4e6d-8cf5-1813dbc9d948	whatsapp	active	2024-12-10 14:21:31.284949+00	2024-12-10 14:21:31.284949+00	36837910-176b-48b8-9a49-e2bc08431bd9	f	
+eb07e857-8869-42cd-a652-0e2ad7ee8537	Bárbara González		+56981598156		2312066a-44b2-4e6d-8cf5-1813dbc9d948	whatsapp	active	2024-12-10 14:22:31.561777+00	2024-12-10 14:22:31.561777+00	36837910-176b-48b8-9a49-e2bc08431bd9	f	
+dabfc366-dee1-4655-a822-5b909533dbd2	Beatriz Baeza		+56998222409		2312066a-44b2-4e6d-8cf5-1813dbc9d948	whatsapp	active	2024-12-10 14:29:20.540702+00	2024-12-10 14:31:01.261116+00	36837910-176b-48b8-9a49-e2bc08431bd9	f	
+3368aea8-9c83-44c2-8b65-a8739ae99a85	Belén López		+56999687903		2312066a-44b2-4e6d-8cf5-1813dbc9d948	whatsapp	active	2024-12-10 14:34:00.768846+00	2024-12-10 14:34:00.768846+00	36837910-176b-48b8-9a49-e2bc08431bd9	f	
+25482691-aff8-44e8-a26a-df88cca75129	Betzabé Cofré		+56963937029		2312066a-44b2-4e6d-8cf5-1813dbc9d948	whatsapp	active	2024-12-10 14:34:47.167023+00	2024-12-10 14:34:47.167023+00	36837910-176b-48b8-9a49-e2bc08431bd9	f	
+8c4d9d6d-8f1a-419f-aaf8-790d99324776	Bryan Álvarez		+56975790564		2312066a-44b2-4e6d-8cf5-1813dbc9d948	whatsapp	active	2024-12-10 14:35:36.906909+00	2024-12-10 14:35:36.906909+00	36837910-176b-48b8-9a49-e2bc08431bd9	f	
+e3739229-0a2c-4b7a-96fc-7f9e62e3befd	Camilo Salazar		+56974786317		2312066a-44b2-4e6d-8cf5-1813dbc9d948	whatsapp	active	2024-12-10 14:37:19.696176+00	2024-12-10 14:41:52.779062+00	36837910-176b-48b8-9a49-e2bc08431bd9	f	
+955eda10-ae83-45a5-91bf-ec1d23e7028d	Carlos Chandía		+56987807246		2312066a-44b2-4e6d-8cf5-1813dbc9d948	whatsapp	active	2024-12-10 14:43:16.504739+00	2024-12-10 14:44:22.058751+00	36837910-176b-48b8-9a49-e2bc08431bd9	f	
+3fbf1be6-0473-48ab-aa83-b02a77aa9466	Carlos Herrera		+56984494484		2312066a-44b2-4e6d-8cf5-1813dbc9d948	whatsapp	active	2024-12-10 14:45:09.519056+00	2024-12-10 14:46:13.065405+00	36837910-176b-48b8-9a49-e2bc08431bd9	f	
+bdee04b5-88d3-4f0c-a5f6-88c37ace1737	Adalexis López		+56942418120		2312066a-44b2-4e6d-8cf5-1813dbc9d948	whatsapp	active	2024-12-10 13:33:20.681488+00	2024-12-10 14:53:05.470514+00	36837910-176b-48b8-9a49-e2bc08431bd9	f	
+68db6b79-229c-4afc-abc9-a054a0ac0875	Carola Barra		+56992990079		2312066a-44b2-4e6d-8cf5-1813dbc9d948	whatsapp	active	2024-12-10 14:50:31.795792+00	2024-12-10 14:54:01.920027+00	36837910-176b-48b8-9a49-e2bc08431bd9	f	
+b0fdd82b-0121-4e25-85fb-6c333d3f990d	Claudia Díaz				2312066a-44b2-4e6d-8cf5-1813dbc9d948	whatsapp	active	2024-12-10 15:40:55.573698+00	2024-12-10 15:43:05.024791+00	36837910-176b-48b8-9a49-e2bc08431bd9	f	
+471b4294-954c-473b-a4ae-7dbc22e015fa	Carola San Martín		+56987405894		2312066a-44b2-4e6d-8cf5-1813dbc9d948	whatsapp	active	2024-12-10 14:55:59.974701+00	2024-12-10 14:59:18.795239+00	36837910-176b-48b8-9a49-e2bc08431bd9	f	
+b37ed689-015e-4707-808f-167bdcab5069	Carolina Salcedo		+56993278819		2312066a-44b2-4e6d-8cf5-1813dbc9d948	whatsapp	active	2024-12-10 15:00:47.627442+00	2024-12-10 15:00:47.627442+00	36837910-176b-48b8-9a49-e2bc08431bd9	f	
+41303b5a-6f07-4d8d-906d-30866333c8a1	Carolina Samaritani		+56944060011		2312066a-44b2-4e6d-8cf5-1813dbc9d948	whatsapp	active	2024-12-10 15:03:19.450055+00	2024-12-10 15:03:19.450055+00	36837910-176b-48b8-9a49-e2bc08431bd9	f	+56992965857
+46e01b27-d86b-4d40-bca0-6fe207a59961	Carolina San Martín		+56992283725		2312066a-44b2-4e6d-8cf5-1813dbc9d948	whatsapp	active	2024-12-10 15:04:45.364816+00	2024-12-10 15:04:45.364816+00	36837910-176b-48b8-9a49-e2bc08431bd9	f	
+ac39ce70-ea62-42e9-9196-20ecebc86b49	Carolina Vidal		+56959101234		2312066a-44b2-4e6d-8cf5-1813dbc9d948	whatsapp	active	2024-12-10 15:07:13.452131+00	2024-12-10 15:07:13.452131+00	36837910-176b-48b8-9a49-e2bc08431bd9	t	
+f306915d-e80d-4dea-a8ea-7ab490d62257	Caroly Flores				2312066a-44b2-4e6d-8cf5-1813dbc9d948	whatsapp	active	2024-12-10 15:26:26.877899+00	2024-12-10 15:26:26.877899+00	36837910-176b-48b8-9a49-e2bc08431bd9	f	
+4903ceb5-1ab4-4c55-b712-15d6f04a00bb	Cecilia Gamboa				2312066a-44b2-4e6d-8cf5-1813dbc9d948	whatsapp	active	2024-12-10 15:28:14.215755+00	2024-12-10 15:28:14.215755+00	36837910-176b-48b8-9a49-e2bc08431bd9	t	
+0bdd6a67-7511-4b8b-89c3-be04015d2984	Cecilia Herrera				2312066a-44b2-4e6d-8cf5-1813dbc9d948	whatsapp	active	2024-12-10 15:30:23.488626+00	2024-12-10 15:30:23.488626+00	36837910-176b-48b8-9a49-e2bc08431bd9	f	
+6272cc76-9378-48b0-83a1-c68e7855fc29	Christopher Hermosilla				2312066a-44b2-4e6d-8cf5-1813dbc9d948	whatsapp	active	2024-12-10 15:31:51.31101+00	2024-12-10 15:34:35.890243+00	36837910-176b-48b8-9a49-e2bc08431bd9	f	
+b73beb0b-a8f4-48c1-a633-be19ed9ef123	Cinthya Rojo				2312066a-44b2-4e6d-8cf5-1813dbc9d948	whatsapp	active	2024-12-10 15:36:53.188232+00	2024-12-10 15:37:11.329167+00	36837910-176b-48b8-9a49-e2bc08431bd9	f	
+8a7fb007-01af-4bb0-be0d-7c08e97de263	Cintia Jerez				2312066a-44b2-4e6d-8cf5-1813dbc9d948	whatsapp	active	2024-12-10 15:38:15.715007+00	2024-12-10 15:40:06.366483+00	36837910-176b-48b8-9a49-e2bc08431bd9	f	
+719b48ef-f16b-4fdd-99a8-28e622239899	Claudia González Vargas				2312066a-44b2-4e6d-8cf5-1813dbc9d948	whatsapp	active	2024-12-10 15:43:56.593284+00	2024-12-10 15:44:07.957273+00	36837910-176b-48b8-9a49-e2bc08431bd9	f	
+785db10b-61bd-486d-be05-411690a1d87b	Claudia Veli				2312066a-44b2-4e6d-8cf5-1813dbc9d948	whatsapp	active	2024-12-10 15:47:02.510236+00	2024-12-10 15:47:02.510236+00	36837910-176b-48b8-9a49-e2bc08431bd9	f	
+2cd05dec-b15e-4ebd-8d28-a126ade84fde	Claudio Fernández				2312066a-44b2-4e6d-8cf5-1813dbc9d948	whatsapp	active	2024-12-10 15:58:31.745766+00	2024-12-10 15:58:31.745766+00	36837910-176b-48b8-9a49-e2bc08431bd9	f	
+bd64a5ba-c0a5-462c-afec-0fd5b5c4e987	Cristián Opazo				2312066a-44b2-4e6d-8cf5-1813dbc9d948	whatsapp	active	2024-12-10 16:11:30.967388+00	2024-12-10 16:12:14.942015+00	36837910-176b-48b8-9a49-e2bc08431bd9	f	
+0d93a064-5b9f-4780-93d2-50888452d781	Cristóbal Bustos				2312066a-44b2-4e6d-8cf5-1813dbc9d948	whatsapp	active	2024-12-10 16:17:20.574811+00	2024-12-10 16:17:20.574811+00	36837910-176b-48b8-9a49-e2bc08431bd9	f	
+f55d0e09-42f7-4726-a58b-987cb63f49de	Rodrigo Peñaloza				2312066a-44b2-4e6d-8cf5-1813dbc9d948	whatsapp	active	2024-12-10 16:19:04.159799+00	2024-12-10 16:19:04.159799+00	36837910-176b-48b8-9a49-e2bc08431bd9	f	
+0e9b8159-8b6b-4a54-84b3-61af7f83130a	Felipe Sánchez				2312066a-44b2-4e6d-8cf5-1813dbc9d948	whatsapp	active	2024-12-10 16:19:50.78211+00	2024-12-10 16:19:50.78211+00	36837910-176b-48b8-9a49-e2bc08431bd9	f	
+764063f5-7028-498b-b5e3-535bdf78dd11	Leslie Espinoza				2312066a-44b2-4e6d-8cf5-1813dbc9d948	whatsapp	active	2024-12-10 16:24:06.061625+00	2024-12-10 16:24:06.061625+00	36837910-176b-48b8-9a49-e2bc08431bd9	f	
+bc4a096f-f1d8-415e-bd1c-4de41b0eaa8e	Felipe Escudero				2312066a-44b2-4e6d-8cf5-1813dbc9d948	whatsapp	active	2024-12-10 16:25:11.982421+00	2024-12-10 16:25:11.982421+00	36837910-176b-48b8-9a49-e2bc08431bd9	f	
+f2e1c1cf-d6f5-4630-8db7-d4c447f07599	Maricette Lagos				2312066a-44b2-4e6d-8cf5-1813dbc9d948	whatsapp	active	2024-12-10 16:27:08.929747+00	2024-12-10 16:27:25.410942+00	36837910-176b-48b8-9a49-e2bc08431bd9	t	
+40c94b4d-140b-4089-91d0-5112f7e85999	Ingrid Farías				2312066a-44b2-4e6d-8cf5-1813dbc9d948	whatsapp	active	2024-12-10 16:28:35.000684+00	2024-12-10 16:28:35.000684+00	36837910-176b-48b8-9a49-e2bc08431bd9	f	
+4658676d-d736-4d9d-9e7d-8d42478617e3	Giovanna Gutiérrez				2312066a-44b2-4e6d-8cf5-1813dbc9d948	whatsapp	active	2024-12-10 16:29:17.180017+00	2024-12-10 16:29:17.180017+00	36837910-176b-48b8-9a49-e2bc08431bd9	t	
+5363aad9-a6f4-486e-9753-c2f6e4037988	Patricia Barrera				2312066a-44b2-4e6d-8cf5-1813dbc9d948	whatsapp	active	2024-12-10 16:29:57.742743+00	2024-12-10 16:29:57.742743+00	36837910-176b-48b8-9a49-e2bc08431bd9	f	
+32e9b4c2-d072-4ffb-843b-914b15241adf	Gloria Ambiado				2312066a-44b2-4e6d-8cf5-1813dbc9d948	whatsapp	active	2024-12-10 16:30:40.927732+00	2024-12-10 16:30:40.927732+00	36837910-176b-48b8-9a49-e2bc08431bd9	f	
+f4a93d1f-b737-4a6e-963c-f187e2d1d79e	Ivanna Gutiérrez				2312066a-44b2-4e6d-8cf5-1813dbc9d948	whatsapp	active	2024-12-10 16:31:04.754579+00	2024-12-10 16:31:04.754579+00	36837910-176b-48b8-9a49-e2bc08431bd9	t	
+b4c107a5-263c-4db3-b920-a6edb283301c	Valeria Wall				2312066a-44b2-4e6d-8cf5-1813dbc9d948	whatsapp	active	2024-12-10 16:32:15.354291+00	2024-12-10 16:32:15.354291+00	36837910-176b-48b8-9a49-e2bc08431bd9	f	
+ff6e6e32-e38b-4371-95a2-5570e03dbd13	Romina Espinoza				2312066a-44b2-4e6d-8cf5-1813dbc9d948	whatsapp	active	2024-12-10 16:33:21.349241+00	2024-12-10 16:33:21.349241+00	36837910-176b-48b8-9a49-e2bc08431bd9	f	
+1b229fd4-6b41-486d-9490-2a329d55ca0e	Sebastián Barraza				2312066a-44b2-4e6d-8cf5-1813dbc9d948	whatsapp	active	2024-12-10 16:39:32.613729+00	2024-12-10 16:39:32.613729+00	36837910-176b-48b8-9a49-e2bc08431bd9	f	
 \.
 
 
@@ -3713,12 +3872,12 @@ c48b8200-a21f-438b-b61b-94994399d1ad	Ana María Garrido		+56958411051		2312066a-
 --
 
 COPY public.mixed_bundle_items (id, bundle_id, product_id, quantity, created_at) FROM stdin;
-8115f209-7c83-4c7f-a9de-c8caf16bf5a8	e7c246b8-5e6f-4fea-9848-d776c8c1cdd2	aa5fced8-b36c-4196-9bcf-a36bb2204cd3	2.00	2024-12-09 15:09:32.673374+00
 9c8a99db-be53-44a3-883f-cf4da206249d	1c081b11-f94a-4b88-8d79-98b1fe613cce	492d2aa4-2135-4a62-860b-ac541aa5717b	2.00	2024-12-09 15:09:40.632242+00
 53750dca-dd83-4279-9383-01467d1bec76	4076a6d8-ca49-4d78-91ea-d5f15736ac9e	aa5fced8-b36c-4196-9bcf-a36bb2204cd3	2.00	2024-12-09 15:28:41.239489+00
 3819a735-569e-4620-8303-fd9197f50dab	4076a6d8-ca49-4d78-91ea-d5f15736ac9e	fc03bf9b-d474-4e05-8796-1a002501e7c6	2.00	2024-12-09 15:28:41.239489+00
 81319c53-b804-4e6f-87e2-4c94ccfb4651	4076a6d8-ca49-4d78-91ea-d5f15736ac9e	71d896bf-921a-40aa-9e59-162c912ebf8d	1.00	2024-12-09 15:28:41.239489+00
 84423c35-f6cf-4312-b711-5625c4d62bc6	ec2de1a7-8a75-4869-8c8a-d3712ebe3ef7	aa5fced8-b36c-4196-9bcf-a36bb2204cd3	10.00	2024-12-09 18:09:51.812819+00
+046c5f3a-7f6f-48e1-bb32-8382b93848d1	e7c246b8-5e6f-4fea-9848-d776c8c1cdd2	aa5fced8-b36c-4196-9bcf-a36bb2204cd3	2.00	2024-12-10 16:49:36.346679+00
 \.
 
 
@@ -3727,10 +3886,10 @@ COPY public.mixed_bundle_items (id, bundle_id, product_id, quantity, created_at)
 --
 
 COPY public.mixed_bundles (id, name, description, total_price, status, created_at, updated_at, created_by, updated_by, start_date, end_date) FROM stdin;
-e7c246b8-5e6f-4fea-9848-d776c8c1cdd2	2 Recargas de 20L		5000.00	active	2024-12-09 14:35:01.710765+00	2024-12-09 15:09:31.919259+00	\N	\N	2024-12-09	\N
 1c081b11-f94a-4b88-8d79-98b1fe613cce	2 Recargas de 10L		4000.00	active	2024-12-09 14:48:12.151735+00	2024-12-09 15:09:39.915536+00	\N	\N	2024-12-09	\N
 4076a6d8-ca49-4d78-91ea-d5f15736ac9e	Pack Inicial 	Pack Inicial para nuevos clientes	15000.00	active	2024-12-09 15:16:49.027932+00	2024-12-09 15:28:40.486522+00	\N	\N	2024-12-09	\N
 ec2de1a7-8a75-4869-8c8a-d3712ebe3ef7	10 Recargas de 20L		20000.00	active	2024-12-09 18:09:51.639962+00	2024-12-09 18:09:51.639962+00	\N	\N	2024-12-09	\N
+e7c246b8-5e6f-4fea-9848-d776c8c1cdd2	2 Recargas de 20L		5000.00	active	2024-12-09 14:35:01.710765+00	2024-12-10 16:49:35.263589+00	\N	\N	2024-09-01	\N
 \.
 
 
@@ -3825,6 +3984,9 @@ dc1406e9-fcd3-40e2-b960-152af5211b8b	2024-11-05 22:59:12.338718+00	2024-11-07 22
 --
 
 COPY public.sale_items (id, sale_id, product_id, item_number, quantity, unit_price, total_price, discount_percentage, notes, created_at) FROM stdin;
+3bebf551-33a2-4a3f-9593-c85039e8dec9	8f612e81-5f9b-432f-8222-0bfa9b54eefd	aa5fced8-b36c-4196-9bcf-a36bb2204cd3	1	52.00	1250.00	65000.00	\N	\N	2024-12-10 16:43:17.825052+00
+9330d5ed-af48-46c5-b56d-4c06ba55ac43	e35bad62-f877-45ad-a859-d6d6d3b39cc9	aa5fced8-b36c-4196-9bcf-a36bb2204cd3	1	2.00	3500.00	5000.00	\N	\N	2024-12-10 16:56:43.962491+00
+a463ca8e-2fc4-4bf7-9f88-b0b3ae72cd29	65f14b6d-db3b-4571-b520-c6589438210b	aa5fced8-b36c-4196-9bcf-a36bb2204cd3	1	2.00	2500.00	5000.00	0.00	\N	2024-12-10 17:02:20.432618+00
 \.
 
 
@@ -3833,6 +3995,9 @@ COPY public.sale_items (id, sale_id, product_id, item_number, quantity, unit_pri
 --
 
 COPY public.sales (id, client_id, created_by, sale_date, delivery_date, delivery_address_id, status, total_amount, notes, payment_status, payment_method_id, payment_date, payment_notes, created_at, updated_at, salesperson_id, product_id, quantity) FROM stdin;
+8f612e81-5f9b-432f-8222-0bfa9b54eefd	1b229fd4-6b41-486d-9490-2a329d55ca0e	\N	2024-11-05	2024-11-05	32a3bf93-cbe8-4900-9a5e-b7948f414860	active	65000.00		paid	f4ee3668-57e1-4126-b64a-3fafe32201bc	2024-11-05 00:00:00+00		2024-12-10 16:43:02.297059+00	2024-12-10 16:43:17.825052+00	\N	\N	1
+e35bad62-f877-45ad-a859-d6d6d3b39cc9	215bf1ed-6208-4220-a889-ebe4b4715e15	\N	2024-11-04	2024-11-04	08ed5f2a-e0b7-498b-b8f8-76ae65560131	active	5000.00		paid	f4ee3668-57e1-4126-b64a-3fafe32201bc	2024-11-04 00:00:00+00		2024-12-10 16:53:19.796707+00	2024-12-10 16:56:43.962491+00	\N	\N	1
+65f14b6d-db3b-4571-b520-c6589438210b	c48b8200-a21f-438b-b61b-94994399d1ad	\N	2024-11-07	2024-11-07	9ae3212c-679a-4761-a8f3-8328c6e37cec	active	5000.00		paid	f4ee3668-57e1-4126-b64a-3fafe32201bc	2024-11-07 00:00:00+00		2024-12-10 17:02:20.432618+00	2024-12-10 17:02:20.432618+00	\N	\N	1
 \.
 
 
@@ -3985,7 +4150,7 @@ COPY vault.secrets (id, name, description, secret, key_id, nonce, created_at, up
 -- Name: refresh_tokens_id_seq; Type: SEQUENCE SET; Schema: auth; Owner: -
 --
 
-SELECT pg_catalog.setval('auth.refresh_tokens_id_seq', 129, true);
+SELECT pg_catalog.setval('auth.refresh_tokens_id_seq', 132, true);
 
 
 --
@@ -6523,6 +6688,15 @@ GRANT ALL ON FUNCTION pgsodium.crypto_aead_det_keygen() TO service_role;
 GRANT ALL ON FUNCTION public.create_sale_with_items(p_client_id uuid, p_sale_date timestamp with time zone, p_delivery_date timestamp with time zone, p_delivery_address_id uuid, p_total_amount numeric, p_notes text, p_items public.sale_item_type[]) TO anon;
 GRANT ALL ON FUNCTION public.create_sale_with_items(p_client_id uuid, p_sale_date timestamp with time zone, p_delivery_date timestamp with time zone, p_delivery_address_id uuid, p_total_amount numeric, p_notes text, p_items public.sale_item_type[]) TO authenticated;
 GRANT ALL ON FUNCTION public.create_sale_with_items(p_client_id uuid, p_sale_date timestamp with time zone, p_delivery_date timestamp with time zone, p_delivery_address_id uuid, p_total_amount numeric, p_notes text, p_items public.sale_item_type[]) TO service_role;
+
+
+--
+-- Name: FUNCTION create_sale_with_items(p_client_id uuid, p_sale_date timestamp with time zone, p_delivery_date timestamp with time zone, p_delivery_address_id uuid, p_total_amount numeric, p_notes text, p_items jsonb[], p_payment_status text, p_payment_method_id uuid, p_payment_date timestamp with time zone, p_payment_notes text); Type: ACL; Schema: public; Owner: -
+--
+
+GRANT ALL ON FUNCTION public.create_sale_with_items(p_client_id uuid, p_sale_date timestamp with time zone, p_delivery_date timestamp with time zone, p_delivery_address_id uuid, p_total_amount numeric, p_notes text, p_items jsonb[], p_payment_status text, p_payment_method_id uuid, p_payment_date timestamp with time zone, p_payment_notes text) TO anon;
+GRANT ALL ON FUNCTION public.create_sale_with_items(p_client_id uuid, p_sale_date timestamp with time zone, p_delivery_date timestamp with time zone, p_delivery_address_id uuid, p_total_amount numeric, p_notes text, p_items jsonb[], p_payment_status text, p_payment_method_id uuid, p_payment_date timestamp with time zone, p_payment_notes text) TO authenticated;
+GRANT ALL ON FUNCTION public.create_sale_with_items(p_client_id uuid, p_sale_date timestamp with time zone, p_delivery_date timestamp with time zone, p_delivery_address_id uuid, p_total_amount numeric, p_notes text, p_items jsonb[], p_payment_status text, p_payment_method_id uuid, p_payment_date timestamp with time zone, p_payment_notes text) TO service_role;
 
 
 --

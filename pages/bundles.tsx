@@ -44,6 +44,8 @@ interface Bundle {
   description: string;
   total_price: number;
   status: string;
+  start_date: string;
+  end_date: string | null;
   items: BundleItem[];
 }
 
@@ -57,6 +59,8 @@ function BundlesPage() {
     name: '',
     description: '',
     total_price: 0,
+    start_date: new Date().toISOString().split('T')[0],
+    end_date: null as string | null,
     items: [] as { product_id: string; quantity: number }[],
   });
   const { toast } = useToast();
@@ -164,6 +168,8 @@ function BundlesPage() {
       name: bundle.name,
       description: bundle.description,
       total_price: bundle.total_price,
+      start_date: formatDateFromDB(bundle.start_date),
+      end_date: bundle.end_date ? formatDateFromDB(bundle.end_date) : null,
       items: bundle.items.map(item => ({
         product_id: item.product.id,
         quantity: item.quantity
@@ -207,6 +213,8 @@ function BundlesPage() {
         name: newBundle.name,
         description: newBundle.description,
         total_price: newBundle.total_price,
+        start_date: formatDateForDB(newBundle.start_date),
+        end_date: newBundle.end_date ? formatDateForDB(newBundle.end_date) : null,
         status: 'active',
       };
 
@@ -291,6 +299,8 @@ function BundlesPage() {
         name: '',
         description: '',
         total_price: 0,
+        start_date: new Date().toISOString().split('T')[0],
+        end_date: null,
         items: [],
       });
       setSelectedBundle(null);
@@ -359,6 +369,27 @@ function BundlesPage() {
     }
   };
 
+  const formatDateForDB = (date: string) => {
+    // Add time to make it noon UTC to avoid timezone issues
+    return `${date}T12:00:00Z`;
+  };
+
+  const formatDateFromDB = (dateStr: string) => {
+    // Parse the date and return only the date part
+    return dateStr.split('T')[0];
+  };
+
+  const formatDisplayDate = (dateStr: string) => {
+    // Format date for display in table
+    const date = new Date(dateStr);
+    return date.toLocaleDateString('es-CL', {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      timeZone: 'UTC'
+    });
+  };
+
   const formatCurrency = (amount: number) => {
     return new Intl.NumberFormat('es-CL', {
       style: 'currency',
@@ -413,6 +444,29 @@ function BundlesPage() {
                     value={newBundle.total_price}
                     onChange={(e) =>
                       setNewBundle((prev) => ({ ...prev, total_price: parseFloat(e.target.value) }))
+                    }
+                  />
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="start_date">Start Date</Label>
+                  <Input
+                    id="start_date"
+                    type="date"
+                    value={newBundle.start_date}
+                    onChange={(e) =>
+                      setNewBundle((prev) => ({ ...prev, start_date: e.target.value }))
+                    }
+                    required
+                  />
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="end_date">End Date (Optional)</Label>
+                  <Input
+                    id="end_date"
+                    type="date"
+                    value={newBundle.end_date || ''}
+                    onChange={(e) =>
+                      setNewBundle((prev) => ({ ...prev, end_date: e.target.value || null }))
                     }
                   />
                 </div>
@@ -473,6 +527,7 @@ function BundlesPage() {
               <TableHead>Name</TableHead>
               <TableHead>Description</TableHead>
               <TableHead>Total Price</TableHead>
+              <TableHead>Date Range</TableHead>
               <TableHead>Items</TableHead>
               <TableHead>Actions</TableHead>
             </TableRow>
@@ -483,6 +538,10 @@ function BundlesPage() {
                 <TableCell>{bundle.name}</TableCell>
                 <TableCell>{bundle.description}</TableCell>
                 <TableCell>{formatCurrency(bundle.total_price)}</TableCell>
+                <TableCell>
+                  {formatDisplayDate(bundle.start_date)}
+                  {bundle.end_date && ` - ${formatDisplayDate(bundle.end_date)}`}
+                </TableCell>
                 <TableCell>
                   <ul className="list-disc list-inside">
                     {bundle.items?.map((item, index) => (

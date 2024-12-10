@@ -409,7 +409,6 @@ export default function SaleFormModal({
         paymentNotes: ''
       })
       setSelectedClient(null)
-      setClientSearch('')
       setClientAddresses([])
       setSpecialPrices({})
       setBundleDiscount(0)
@@ -592,10 +591,11 @@ export default function SaleFormModal({
 
       // Format items for database
       const items = formData.items.map(item => ({
-        product_id: item.productId,
-        quantity: item.quantity,
-        unit_price: item.unitPrice,
-        total_price: item.totalPrice
+        productId: item.productId,
+        quantity: Number(item.quantity),
+        unitPrice: Number(item.unitPrice || 0),
+        totalPrice: Number(item.totalPrice || 0),
+        discountPercentage: Number(item.discountPercentage || 0)
       }))
 
       let result;
@@ -628,7 +628,11 @@ export default function SaleFormModal({
           p_delivery_address_id: formData.deliveryAddressId,
           p_total_amount: total,
           p_notes: formData.notes,
-          p_items: items
+          p_items: items,
+          p_payment_status: formData.paymentStatus,
+          p_payment_method_id: formData.paymentMethodId || null,
+          p_payment_date: paymentDate,
+          p_payment_notes: formData.paymentNotes
         })
 
         if (error) throw error
