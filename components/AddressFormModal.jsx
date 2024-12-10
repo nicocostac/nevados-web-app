@@ -4,6 +4,7 @@ import { Input } from '@/components/ui/input'
 import { Alert } from '@/components/ui/alert'
 import { X } from 'lucide-react'
 import { supabase } from '@/lib/supabaseClient'
+import { geocodeAddress } from '@/lib/utils/geocoding'
 
 export default function AddressFormModal({
   isOpen,
@@ -106,6 +107,33 @@ export default function AddressFormModal({
     }
 
     try {
+      // Get borough and neighborhood names for geocoding
+      const { data: boroughData } = await supabase
+        .from('boroughs')
+        .select('name')
+        .eq('id', formData.borough_id)
+        .single()
+
+      let neighborhoodName = null
+      if (formData.neighborhood_id) {
+        const { data: neighborhoodData } = await supabase
+          .from('neighborhoods')
+          .select('name')
+          .eq('id', formData.neighborhood_id)
+          .single()
+        neighborhoodName = neighborhoodData?.name
+      }
+
+      // Prepare address object for geocoding
+      const addressForGeocoding = {
+        street_address: formData.street_address,
+        boroughs: { name: boroughData?.name },
+        neighborhoods: neighborhoodName ? { name: neighborhoodName } : null
+      }
+
+      // Get coordinates
+      const coordinates = await geocodeAddress(addressForGeocoding)
+
       // Only send the IDs and other necessary data
       const addressData = {
         street_address: formData.street_address,
@@ -113,7 +141,9 @@ export default function AddressFormModal({
         neighborhood_id: formData.neighborhood_id || null,
         additional_info: formData.additional_info,
         contact_person: formData.contact_person,
-        is_default: formData.is_default
+        is_default: formData.is_default,
+        latitude: coordinates?.latitude || null,
+        longitude: coordinates?.longitude || null
       }
 
       await onSubmit(addressData)

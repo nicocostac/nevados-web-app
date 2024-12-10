@@ -192,23 +192,91 @@ export default function ClientFormModal({
       };
 
       if (editingAddress) {
-        const { error } = await supabase
-          .from('client_addresses')
-          .update(newAddress)
-          .eq('id', editingAddress.id);
+        if (editingClient?.id) {
+          // For existing client, update in database
+          const { error } = await supabase
+            .from('client_addresses')
+            .update(newAddress)
+            .eq('id', editingAddress.id);
 
-        if (error) throw error;
+          if (error) throw error;
+          
+          // Update the address in the local state
+          setAddresses(prev => prev.map(addr => 
+            addr.id === editingAddress.id ? { ...addr, ...newAddress } : addr
+          ));
+        } else {
+          // For new client, update in local state only
+          // Get borough and neighborhood data
+          const [{ data: boroughData }, { data: neighborhoodData }] = await Promise.all([
+            supabase
+              .from('boroughs')
+              .select('name')
+              .eq('id', addressData.borough_id)
+              .single(),
+            addressData.neighborhood_id ? 
+              supabase
+                .from('neighborhoods')
+                .select('name')
+                .eq('id', addressData.neighborhood_id)
+                .single() :
+              Promise.resolve({ data: null })
+          ]);
+
+          // Update the temporary address
+          const updatedAddress = {
+            ...newAddress,
+            id: editingAddress.id, // Keep the same temporary ID
+            boroughs: { name: boroughData?.name },
+            neighborhoods: neighborhoodData ? { name: neighborhoodData.name } : null
+          };
+
+          setAddresses(prev => prev.map(addr => 
+            addr.id === editingAddress.id ? updatedAddress : addr
+          ));
+        }
       } else {
-        const { error } = await supabase
-          .from('client_addresses')
-          .insert([newAddress]);
+        if (editingClient?.id) {
+          // For existing client, insert to database
+          const { data, error } = await supabase
+            .from('client_addresses')
+            .insert([newAddress])
+            .select(`
+              *,
+              boroughs:boroughs(name),
+              neighborhoods:neighborhoods(name)
+            `);
 
-        if (error) throw error;
-      }
+          if (error) throw error;
+          
+          // Add the new address to the local state
+          setAddresses(prev => [...prev, data[0]]);
+        } else {
+          // For new client, fetch borough and neighborhood data
+          const [{ data: boroughData }, { data: neighborhoodData }] = await Promise.all([
+            supabase
+              .from('boroughs')
+              .select('name')
+              .eq('id', addressData.borough_id)
+              .single(),
+            addressData.neighborhood_id ? 
+              supabase
+                .from('neighborhoods')
+                .select('name')
+                .eq('id', addressData.neighborhood_id)
+                .single() :
+              Promise.resolve({ data: null })
+          ]);
 
-      // Refresh addresses list
-      if (editingClient?.id) {
-        await fetchAddresses(editingClient.id);
+          // Create temporary address with borough and neighborhood data
+          const tempAddress = {
+            ...newAddress,
+            id: `temp_${Date.now()}`,
+            boroughs: { name: boroughData?.name },
+            neighborhoods: neighborhoodData ? { name: neighborhoodData.name } : null
+          };
+          setAddresses(prev => [...prev, tempAddress]);
+        }
       }
     } catch (error) {
       console.error('Error handling address:', error);
@@ -313,6 +381,62 @@ export default function ClientFormModal({
     }
   };
 
+  const handleNewAddress = async (addressData) => {
+    try {
+      // For new clients, store addresses in state to be saved after client creation
+      if (!editingClient) {
+        // Set is_default to true if this is the first address
+        const isFirstAddress = addresses.length === 0;
+        
+        // Get borough and neighborhood data for display purposes only
+        const [{ data: boroughData }, { data: neighborhoodData }] = await Promise.all([
+          supabase
+            .from('boroughs')
+            .select('name')
+            .eq('id', addressData.borough_id)
+            .single(),
+          addressData.neighborhood_id ? 
+            supabase
+              .from('neighborhoods')
+              .select('name')
+              .eq('id', addressData.neighborhood_id)
+              .single() :
+            Promise.resolve({ data: null })
+        ]);
+
+        // Create temporary address
+        const newAddress = {
+          ...addressData,
+          id: editingAddress?.id || `temp_${Date.now()}`,
+          is_default: isFirstAddress,
+          contact_person: addressData.contact_person || formData.name,
+          // Store display data separately from the actual data
+          _boroughName: boroughData?.name,
+          _neighborhoodName: neighborhoodData?.name
+        };
+
+        if (editingAddress) {
+          // Update existing address
+          setAddresses(prev => prev.map(addr => 
+            addr.id === editingAddress.id ? newAddress : addr
+          ));
+        } else {
+          // Add new address
+          setAddresses(prev => [...prev, newAddress]);
+        }
+      } else {
+        // For existing clients, save address directly to database
+        await handleAddressSubmit({
+          ...addressData,
+          contact_person: addressData.contact_person || editingClient.name
+        });
+      }
+    } catch (error) {
+      console.error('Error handling address:', error);
+      throw error;
+    }
+  };
+
   if (!isOpen) return null
 
   const handleSubmit = async (e) => {
@@ -367,7 +491,7 @@ export default function ClientFormModal({
 
         // If we have addresses to add for a new client
         if (clientId && addresses.length > 0) {
-          const addressesWithClientId = addresses.map(address => ({
+          const addressesWithClientId = addresses.map(({ _boroughName, _neighborhoodName, id, ...address }) => ({
             ...address,
             client_id: clientId
           }))
@@ -418,30 +542,6 @@ export default function ClientFormModal({
       setIsLoading(false)
     }
   }
-
-  // Add function to handle new addresses before client is created
-  const handleNewAddress = (addressData) => {
-    // For new clients, store addresses in state to be saved after client creation
-    if (!editingClient) {
-      // Set is_default to true if this is the first address
-      const isFirstAddress = addresses.length === 0;
-      const newAddress = {
-        ...addressData,
-        is_default: isFirstAddress,
-        // Set contact person to client name if empty
-        contact_person: addressData.contact_person || formData.name
-      };
-      setAddresses([...addresses, newAddress]);
-    } else {
-      // For existing clients, save address directly to database
-      const updatedAddressData = {
-        ...addressData,
-        // Set contact person to client name if empty
-        contact_person: addressData.contact_person || editingClient.name
-      };
-      handleAddressSubmit(updatedAddressData);
-    }
-  };
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
@@ -517,10 +617,9 @@ export default function ClientFormModal({
             </div>
 
             <div className="space-y-2">
-              {/* Show saved addresses for existing clients */}
-              {editingClient && addresses.map((address) => (
+              {addresses.map((address) => (
                 <div
-                  key={address.id}
+                  key={address.id || `temp_${address.street_address}_${Date.now()}`}
                   className="flex items-start justify-between p-3 border rounded"
                 >
                   <div className="flex items-start space-x-3">
@@ -533,8 +632,10 @@ export default function ClientFormModal({
                         )}
                       </div>
                       <div className="text-sm text-gray-500">
-                        {address.boroughs?.name}
-                        {address.neighborhoods?.name && `, ${address.neighborhoods.name}`}
+                        {/* Use the display names for temporary addresses, fall back to relationship data for saved addresses */}
+                        {address._boroughName || address.boroughs?.name}
+                        {(address._neighborhoodName || address.neighborhoods?.name) && 
+                          `, ${address._neighborhoodName || address.neighborhoods?.name}`}
                       </div>
                       {address.additional_info && (
                         <div className="text-sm text-gray-500">{address.additional_info}</div>
@@ -542,7 +643,7 @@ export default function ClientFormModal({
                     </div>
                   </div>
                   <div className="flex space-x-2">
-                    {address.latitude && address.longitude && (
+                    {(address.latitude || address.longitude) && (
                       <button
                         type="button"
                         onClick={() => openInGoogleMaps(address)}
@@ -554,65 +655,23 @@ export default function ClientFormModal({
                         </svg>
                       </button>
                     )}
-                    <Button
+                    <button
                       type="button"
-                      variant="ghost"
-                      size="sm"
                       onClick={() => {
                         setEditingAddress(address)
                         setIsAddressModalOpen(true)
                       }}
+                      className="text-blue-600 hover:text-blue-800"
                     >
-                      <Edit2 className="h-4 w-4" />
-                    </Button>
-                    <Button
+                      <Edit2 className="h-5 w-5" />
+                    </button>
+                    <button
                       type="button"
-                      variant="ghost"
-                      size="sm"
                       onClick={() => handleDeleteAddress(address.id)}
+                      className="text-red-600 hover:text-red-800"
                     >
-                      <Trash2 className="h-4 w-4 text-red-500" />
-                    </Button>
-                  </div>
-                </div>
-              ))}
-
-              {/* Show unsaved addresses for new clients */}
-              {!editingClient && addresses.map((address, index) => (
-                <div
-                  key={index}
-                  className="flex items-start justify-between p-3 border rounded"
-                >
-                  <div className="flex items-start space-x-3">
-                    <MapPin className="h-5 w-5 mt-1 text-gray-400" />
-                    <div>
-                      <div className="font-medium">
-                        {address.street_address}
-                        {address.is_default && (
-                          <span className="ml-2 text-sm text-blue-600">(Default)</span>
-                        )}
-                      </div>
-                      <div className="text-sm text-gray-500">
-                        {address.boroughs?.name}
-                        {address.neighborhoods?.name && `, ${address.neighborhoods.name}`}
-                      </div>
-                      {address.additional_info && (
-                        <div className="text-sm text-gray-500">{address.additional_info}</div>
-                      )}
-                    </div>
-                  </div>
-                  <div className="flex gap-2">
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => {
-                        // Remove address from temporary list
-                        setAddresses(addresses.filter((_, i) => i !== index))
-                      }}
-                    >
-                      <Trash2 className="h-4 w-4 text-red-500" />
-                    </Button>
+                      <Trash2 className="h-5 w-5" />
+                    </button>
                   </div>
                 </div>
               ))}
@@ -639,7 +698,7 @@ export default function ClientFormModal({
               {/* Show saved prices for existing clients */}
               {editingClient && specialPrices.map((price) => (
                 <div
-                  key={price.id}
+                  key={price.id || `temp_price_${price.product_id}_${Date.now()}`}
                   className="flex items-start justify-between p-3 border rounded"
                 >
                   <div>
@@ -683,7 +742,7 @@ export default function ClientFormModal({
               {/* Show temporary prices for new clients */}
               {!editingClient && tempSpecialPrices.map((price) => (
                 <div
-                  key={price.tempId}
+                  key={price.tempId || `temp_price_${price.product_id}_${Date.now()}`}
                   className="flex items-start justify-between p-3 border rounded"
                 >
                   <div>
@@ -810,7 +869,7 @@ export default function ClientFormModal({
           setIsAddressModalOpen(false)
           setEditingAddress(null)
         }}
-        onSubmit={editingClient ? handleAddressSubmit : handleNewAddress}
+        onSubmit={handleNewAddress}
         editingAddress={editingAddress}
       />
 
