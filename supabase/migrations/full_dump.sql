@@ -234,6 +234,18 @@ CREATE TYPE auth.one_time_token_type AS ENUM (
 
 
 --
+-- Name: sale_item_type; Type: TYPE; Schema: public; Owner: -
+--
+
+CREATE TYPE public.sale_item_type AS (
+	product_id uuid,
+	quantity numeric,
+	unit_price numeric,
+	total_price numeric
+);
+
+
+--
 -- Name: user_role; Type: TYPE; Schema: public; Owner: -
 --
 
@@ -696,6 +708,70 @@ $$;
 
 
 --
+-- Name: create_sale_with_items(uuid, timestamp with time zone, timestamp with time zone, uuid, numeric, text, public.sale_item_type[]); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.create_sale_with_items(p_client_id uuid, p_sale_date timestamp with time zone, p_delivery_date timestamp with time zone, p_delivery_address_id uuid, p_total_amount numeric, p_notes text, p_items public.sale_item_type[]) RETURNS uuid
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path TO 'public'
+    AS $$
+DECLARE
+    v_sale_id uuid;
+    v_item sale_item_type;
+    v_item_number integer := 1;
+BEGIN
+    -- Insert the sale
+    INSERT INTO sales (
+        client_id,
+        sale_date,
+        delivery_date,
+        delivery_address_id,
+        total_amount,
+        notes,
+        created_at,
+        updated_at
+    ) VALUES (
+        p_client_id,
+        p_sale_date,
+        p_delivery_date,
+        p_delivery_address_id,
+        p_total_amount,
+        p_notes,
+        CURRENT_TIMESTAMP,
+        CURRENT_TIMESTAMP
+    )
+    RETURNING id INTO v_sale_id;
+
+    -- Insert each sale item
+    FOREACH v_item IN ARRAY p_items
+    LOOP
+        INSERT INTO sale_items (
+            sale_id,
+            product_id,
+            item_number,
+            quantity,
+            unit_price,
+            total_price,
+            created_at
+        ) VALUES (
+            v_sale_id,
+            v_item.product_id,
+            v_item_number,
+            v_item.quantity,
+            v_item.unit_price,
+            v_item.total_price,
+            CURRENT_TIMESTAMP
+        );
+        
+        v_item_number := v_item_number + 1;
+    END LOOP;
+
+    RETURN v_sale_id;
+END;
+$$;
+
+
+--
 -- Name: ensure_single_default_address(); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -718,120 +794,121 @@ $$;
 -- Name: get_product_price_at_date(uuid, date, uuid); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.get_product_price_at_date(product_id uuid, target_date date, client_id uuid DEFAULT NULL::uuid) RETURNS TABLE(price numeric, price_type text, bundle_id uuid, bundle_quantity numeric)
+CREATE FUNCTION public.get_product_price_at_date(product_id uuid, target_date date, client_id uuid DEFAULT NULL::uuid) RETURNS TABLE(price numeric, price_type text, bundle_id uuid, bundle_quantity numeric, bundle_products jsonb, quantity_bundles jsonb)
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path TO 'public'
     AS $$
 DECLARE
-    v_is_bundle boolean;
-    v_bundle_price numeric;
-    v_quantity_price numeric;
-    v_bundle_record record;
+    v_quantity_bundles jsonb;
 BEGIN
-    -- First check if this is a bundle
-    SELECT EXISTS (
-        SELECT 1 FROM public.mixed_bundles mb
-        WHERE mb.id = product_id 
-        AND mb.status = 'active'
-        AND (mb.end_date IS NULL OR mb.end_date >= target_date)
-        AND mb.start_date <= target_date
-    ) INTO v_is_bundle;
+    -- First get all quantity bundles for the product
+    SELECT jsonb_agg(
+        jsonb_build_object(
+            'bundle_quantity', mbi.quantity,
+            'price', mb.total_price
+        )
+    )
+    INTO v_quantity_bundles
+    FROM mixed_bundles mb
+    JOIN mixed_bundle_items mbi ON mbi.bundle_id = mb.id
+    WHERE mbi.product_id = get_product_price_at_date.product_id
+    AND mb.start_date <= target_date
+    AND (mb.end_date IS NULL OR mb.end_date >= target_date)
+    AND (
+        -- Check if this is a quantity bundle (only one product in bundle)
+        SELECT COUNT(DISTINCT mbi2.product_id) = 1
+        FROM mixed_bundle_items mbi2
+        WHERE mbi2.bundle_id = mb.id
+    );
 
-    IF v_is_bundle THEN
-        -- If it's a bundle, return the bundle price
-        RETURN QUERY 
+    -- Then check for client-specific prices
+    RETURN QUERY
+    WITH bundle_info AS (
+        -- Get bundle information including number of products
+        SELECT 
+            mb.id,
+            mb.total_price,
+            COUNT(mbi.product_id) as product_count,
+            MIN(mbi.quantity) as min_quantity,
+            jsonb_agg(jsonb_build_object(
+                'product_id', mbi.product_id,
+                'quantity', mbi.quantity
+            )) as bundle_products
+        FROM mixed_bundles mb
+        JOIN mixed_bundle_items mbi ON mbi.bundle_id = mb.id
+        WHERE mb.start_date <= target_date
+        AND (mb.end_date IS NULL OR mb.end_date >= target_date)
+        GROUP BY mb.id, mb.total_price
+    ),
+    price_sources AS (
+        -- Client specific price (highest priority)
+        SELECT 
+            cp.final_price as price,
+            'client'::text as price_type,
+            NULL::uuid as bundle_id,
+            NULL::numeric as bundle_quantity,
+            NULL::jsonb as bundle_products,
+            v_quantity_bundles as quantity_bundles,
+            1 as priority
+        FROM client_prices cp
+        WHERE cp.product_id = get_product_price_at_date.product_id
+        AND cp.client_id = get_product_price_at_date.client_id
+        AND cp.start_date <= target_date
+        AND (cp.end_date IS NULL OR cp.end_date >= target_date)
+        
+        UNION ALL
+        
+        -- Mixed bundle price (if this is a bundle)
         SELECT 
             mb.total_price as price,
             'bundle'::text as price_type,
             mb.id as bundle_id,
-            NULL::numeric as bundle_quantity
-        FROM public.mixed_bundles mb
-        WHERE mb.id = product_id
-        AND mb.status = 'active'
-        AND (mb.end_date IS NULL OR mb.end_date >= target_date)
-        AND mb.start_date <= target_date;
-
-        -- If no bundle found, return 0
-        IF NOT FOUND THEN
-            RETURN QUERY SELECT 
-                0::numeric as price,
-                'none'::text as price_type,
-                NULL::uuid as bundle_id,
-                NULL::numeric as bundle_quantity;
-        END IF;
-    ELSE
-        -- Check if there's a single-product bundle for this product
-        SELECT 
-            mb.id as bundle_id,
-            mb.total_price as bundle_price,
-            mbi.quantity as bundle_quantity
-        INTO v_bundle_record
-        FROM public.mixed_bundles mb
-        JOIN public.mixed_bundle_items mbi ON mb.id = mbi.bundle_id
-        WHERE mbi.product_id = get_product_price_at_date.product_id
-        AND mb.status = 'active'
-        AND (mb.end_date IS NULL OR mb.end_date >= target_date)
+            NULL::numeric as bundle_quantity,
+            bi.bundle_products,
+            v_quantity_bundles as quantity_bundles,
+            2 as priority
+        FROM mixed_bundles mb
+        JOIN bundle_info bi ON bi.id = mb.id
+        WHERE mb.id = get_product_price_at_date.product_id
         AND mb.start_date <= target_date
-        AND EXISTS (
-            SELECT 1 FROM public.mixed_bundle_items mbi2
-            WHERE mbi2.bundle_id = mb.id
-            GROUP BY mbi2.bundle_id
-            HAVING COUNT(*) = 1
-        )
-        ORDER BY mbi.quantity ASC
-        LIMIT 1;
+        AND (mb.end_date IS NULL OR mb.end_date >= target_date)
+        
+        UNION ALL
+        
+        -- Regular product price (lowest priority)
+        SELECT 
+            pp.price as price,
+            'regular'::text as price_type,
+            NULL::uuid as bundle_id,
+            NULL::numeric as bundle_quantity,
+            NULL::jsonb as bundle_products,
+            v_quantity_bundles as quantity_bundles,
+            3 as priority
+        FROM product_prices pp
+        WHERE pp.product_id = get_product_price_at_date.product_id
+        AND pp.start_date <= target_date
+        AND (pp.end_date IS NULL OR pp.end_date >= target_date)
+    )
+    SELECT 
+        ps.price,
+        ps.price_type,
+        ps.bundle_id,
+        ps.bundle_quantity,
+        ps.bundle_products,
+        ps.quantity_bundles
+    FROM price_sources ps
+    ORDER BY ps.priority
+    LIMIT 1;
 
-        IF v_bundle_record IS NOT NULL THEN
-            -- Return the bundle-based unit price
-            RETURN QUERY SELECT 
-                (v_bundle_record.bundle_price / v_bundle_record.bundle_quantity) as price,
-                'bundle_unit'::text as price_type,
-                v_bundle_record.bundle_id as bundle_id,
-                v_bundle_record.bundle_quantity as bundle_quantity;
-        ELSE
-            -- For regular products without bundles, get quantity-based price
-            SELECT pp.price INTO v_quantity_price
-            FROM public.product_prices pp
-            WHERE pp.product_id = get_product_price_at_date.product_id
-            AND pp.start_date <= target_date
-            AND (pp.end_date IS NULL OR pp.end_date >= target_date)
-            AND pp.min_quantity <= 1  -- Default to quantity 1
-            AND (pp.max_quantity IS NULL OR pp.max_quantity >= 1)
-            ORDER BY pp.min_quantity DESC, pp.start_date DESC
-            LIMIT 1;
-
-            -- If no quantity-based price found, get the base price (min_quantity = 1)
-            IF v_quantity_price IS NULL THEN
-                RETURN QUERY 
-                SELECT 
-                    pp.price as price,
-                    'regular'::text as price_type,
-                    NULL::uuid as bundle_id,
-                    NULL::numeric as bundle_quantity
-                FROM public.product_prices pp
-                WHERE pp.product_id = get_product_price_at_date.product_id
-                AND pp.start_date <= target_date
-                AND (pp.end_date IS NULL OR pp.end_date >= target_date)
-                AND pp.min_quantity = 1
-                ORDER BY pp.start_date DESC
-                LIMIT 1;
-
-                -- If no price found at all, return 0
-                IF NOT FOUND THEN
-                    RETURN QUERY SELECT 
-                        0::numeric as price,
-                        'none'::text as price_type,
-                        NULL::uuid as bundle_id,
-                        NULL::numeric as bundle_quantity;
-                END IF;
-            ELSE
-                RETURN QUERY SELECT 
-                    v_quantity_price as price,
-                    'quantity_based'::text as price_type,
-                    NULL::uuid as bundle_id,
-                    NULL::numeric as bundle_quantity;
-            END IF;
-        END IF;
+    -- If no price found, return 0 with type 'none'
+    IF NOT FOUND THEN
+        RETURN QUERY SELECT 
+            0::numeric as price,
+            'none'::text as price_type,
+            NULL::uuid as bundle_id,
+            NULL::numeric as bundle_quantity,
+            NULL::jsonb as bundle_products,
+            v_quantity_bundles as quantity_bundles;
     END IF;
 END;
 $$;
@@ -1118,6 +1195,65 @@ BEGIN
         NOW(),
         NOW()
     );
+END;
+$$;
+
+
+--
+-- Name: update_sale_with_items(uuid, uuid, timestamp with time zone, timestamp with time zone, uuid, numeric, text, public.sale_item_type[], text, uuid, timestamp with time zone, text); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.update_sale_with_items(p_sale_id uuid, p_client_id uuid, p_sale_date timestamp with time zone, p_delivery_date timestamp with time zone, p_delivery_address_id uuid, p_total_amount numeric, p_notes text, p_items public.sale_item_type[], p_payment_status text DEFAULT 'pending'::text, p_payment_method_id uuid DEFAULT NULL::uuid, p_payment_date timestamp with time zone DEFAULT NULL::timestamp with time zone, p_payment_notes text DEFAULT NULL::text) RETURNS uuid
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path TO 'public'
+    AS $$
+DECLARE
+    v_item sale_item_type;
+    v_item_number integer := 1;
+BEGIN
+    -- Update the sale
+    UPDATE sales SET
+        client_id = p_client_id,
+        sale_date = p_sale_date,
+        delivery_date = p_delivery_date,
+        delivery_address_id = p_delivery_address_id,
+        total_amount = p_total_amount,
+        notes = p_notes,
+        payment_status = p_payment_status,
+        payment_method_id = p_payment_method_id,
+        payment_date = p_payment_date,
+        payment_notes = p_payment_notes,
+        updated_at = CURRENT_TIMESTAMP
+    WHERE id = p_sale_id;
+
+    -- Delete existing items
+    DELETE FROM sale_items WHERE sale_id = p_sale_id;
+
+    -- Insert updated items
+    FOREACH v_item IN ARRAY p_items
+    LOOP
+        INSERT INTO sale_items (
+            sale_id,
+            product_id,
+            item_number,
+            quantity,
+            unit_price,
+            total_price,
+            created_at
+        ) VALUES (
+            p_sale_id,
+            v_item.product_id,
+            v_item_number,
+            v_item.quantity,
+            v_item.unit_price,
+            v_item.total_price,
+            CURRENT_TIMESTAMP
+        );
+        
+        v_item_number := v_item_number + 1;
+    END LOOP;
+
+    RETURN p_sale_id;
 END;
 $$;
 
@@ -2635,7 +2771,8 @@ CREATE TABLE public.clients (
     created_at timestamp with time zone DEFAULT timezone('utc'::text, now()) NOT NULL,
     updated_at timestamp with time zone DEFAULT timezone('utc'::text, now()) NOT NULL,
     created_by uuid,
-    is_tj boolean DEFAULT false NOT NULL
+    is_tj boolean DEFAULT false NOT NULL,
+    phone_2 text
 );
 
 
@@ -3242,6 +3379,14 @@ COPY auth.audit_log_entries (instance_id, id, payload, created_at, ip_address) F
 00000000-0000-0000-0000-000000000000	d8fd3e4a-8efd-46f2-b6fc-8ea6dff1b191	{"action":"token_revoked","actor_id":"36837910-176b-48b8-9a49-e2bc08431bd9","actor_username":"nicocostac+nevados@gmail.com","actor_via_sso":false,"log_type":"token"}	2024-12-09 15:53:23.622136+00	
 00000000-0000-0000-0000-000000000000	f1b1c76c-881e-4a53-9492-68b8a339623a	{"action":"token_refreshed","actor_id":"36837910-176b-48b8-9a49-e2bc08431bd9","actor_username":"nicocostac+nevados@gmail.com","actor_via_sso":false,"log_type":"token"}	2024-12-09 16:51:26.240496+00	
 00000000-0000-0000-0000-000000000000	bda8e6ef-f843-41fe-8a55-eade7740366e	{"action":"token_revoked","actor_id":"36837910-176b-48b8-9a49-e2bc08431bd9","actor_username":"nicocostac+nevados@gmail.com","actor_via_sso":false,"log_type":"token"}	2024-12-09 16:51:26.24378+00	
+00000000-0000-0000-0000-000000000000	e911a848-cbaf-49c3-b3c8-11e0becaf999	{"action":"token_refreshed","actor_id":"36837910-176b-48b8-9a49-e2bc08431bd9","actor_username":"nicocostac+nevados@gmail.com","actor_via_sso":false,"log_type":"token"}	2024-12-09 17:52:15.072606+00	
+00000000-0000-0000-0000-000000000000	40891ce4-ee70-4e4d-bd45-0b42a30e52f2	{"action":"token_revoked","actor_id":"36837910-176b-48b8-9a49-e2bc08431bd9","actor_username":"nicocostac+nevados@gmail.com","actor_via_sso":false,"log_type":"token"}	2024-12-09 17:52:15.07885+00	
+00000000-0000-0000-0000-000000000000	88f51003-73c5-426d-a0b1-f0076116a5b4	{"action":"token_refreshed","actor_id":"36837910-176b-48b8-9a49-e2bc08431bd9","actor_username":"nicocostac+nevados@gmail.com","actor_via_sso":false,"log_type":"token"}	2024-12-09 18:52:20.940407+00	
+00000000-0000-0000-0000-000000000000	ecf41a8d-bed6-4265-8232-9500fafb50e3	{"action":"token_revoked","actor_id":"36837910-176b-48b8-9a49-e2bc08431bd9","actor_username":"nicocostac+nevados@gmail.com","actor_via_sso":false,"log_type":"token"}	2024-12-09 18:52:20.942759+00	
+00000000-0000-0000-0000-000000000000	5db017b1-4bdb-437c-b75f-a80111cb28a1	{"action":"token_refreshed","actor_id":"36837910-176b-48b8-9a49-e2bc08431bd9","actor_username":"nicocostac+nevados@gmail.com","actor_via_sso":false,"log_type":"token"}	2024-12-09 19:52:25.948424+00	
+00000000-0000-0000-0000-000000000000	364ec4b5-8cc6-4c31-af0e-6e0f1cf298a7	{"action":"token_revoked","actor_id":"36837910-176b-48b8-9a49-e2bc08431bd9","actor_username":"nicocostac+nevados@gmail.com","actor_via_sso":false,"log_type":"token"}	2024-12-09 19:52:25.961334+00	
+00000000-0000-0000-0000-000000000000	26c03e55-88f6-4a11-942f-aeae8fef5079	{"action":"token_refreshed","actor_id":"36837910-176b-48b8-9a49-e2bc08431bd9","actor_username":"nicocostac+nevados@gmail.com","actor_via_sso":false,"log_type":"token"}	2024-12-10 13:27:29.951912+00	
+00000000-0000-0000-0000-000000000000	d77e8f51-2dd7-442a-8c22-879a3cb491cc	{"action":"token_revoked","actor_id":"36837910-176b-48b8-9a49-e2bc08431bd9","actor_username":"nicocostac+nevados@gmail.com","actor_via_sso":false,"log_type":"token"}	2024-12-10 13:27:29.967507+00	
 \.
 
 
@@ -3349,7 +3494,11 @@ COPY auth.refresh_tokens (instance_id, id, token, user_id, revoked, created_at, 
 00000000-0000-0000-0000-000000000000	122	oPiqjbuXysY9j9owcBfTKQ	36837910-176b-48b8-9a49-e2bc08431bd9	t	2024-12-09 13:40:16.160408+00	2024-12-09 14:40:20.370963+00	ij0vxKAqY3s61kRzqMPUtg	db09d6bd-540b-4c85-8968-a610d88dbe23
 00000000-0000-0000-0000-000000000000	123	PDbsmL0uNn0Y3sLP4DQW2g	36837910-176b-48b8-9a49-e2bc08431bd9	t	2024-12-09 14:40:20.372543+00	2024-12-09 15:53:23.623164+00	oPiqjbuXysY9j9owcBfTKQ	db09d6bd-540b-4c85-8968-a610d88dbe23
 00000000-0000-0000-0000-000000000000	124	6_VpSfa0zrmlT5Le2ieA5g	36837910-176b-48b8-9a49-e2bc08431bd9	t	2024-12-09 15:53:23.624314+00	2024-12-09 16:51:26.244349+00	PDbsmL0uNn0Y3sLP4DQW2g	db09d6bd-540b-4c85-8968-a610d88dbe23
-00000000-0000-0000-0000-000000000000	125	Kpai9yJ1md7bogeUfwxyZA	36837910-176b-48b8-9a49-e2bc08431bd9	f	2024-12-09 16:51:26.245744+00	2024-12-09 16:51:26.245744+00	6_VpSfa0zrmlT5Le2ieA5g	db09d6bd-540b-4c85-8968-a610d88dbe23
+00000000-0000-0000-0000-000000000000	125	Kpai9yJ1md7bogeUfwxyZA	36837910-176b-48b8-9a49-e2bc08431bd9	t	2024-12-09 16:51:26.245744+00	2024-12-09 17:52:15.079338+00	6_VpSfa0zrmlT5Le2ieA5g	db09d6bd-540b-4c85-8968-a610d88dbe23
+00000000-0000-0000-0000-000000000000	126	m4jcZn23C1bo27mC0F8nSg	36837910-176b-48b8-9a49-e2bc08431bd9	t	2024-12-09 17:52:15.080962+00	2024-12-09 18:52:20.943297+00	Kpai9yJ1md7bogeUfwxyZA	db09d6bd-540b-4c85-8968-a610d88dbe23
+00000000-0000-0000-0000-000000000000	127	tPj1SimfKe7JVdBqn48OaA	36837910-176b-48b8-9a49-e2bc08431bd9	t	2024-12-09 18:52:20.944599+00	2024-12-09 19:52:25.962455+00	m4jcZn23C1bo27mC0F8nSg	db09d6bd-540b-4c85-8968-a610d88dbe23
+00000000-0000-0000-0000-000000000000	128	uoz-gxr43pVGqEkod1-gog	36837910-176b-48b8-9a49-e2bc08431bd9	t	2024-12-09 19:52:25.966797+00	2024-12-10 13:27:29.969354+00	tPj1SimfKe7JVdBqn48OaA	db09d6bd-540b-4c85-8968-a610d88dbe23
+00000000-0000-0000-0000-000000000000	129	BY6m0VVPVZeEWuFC3QRlzw	36837910-176b-48b8-9a49-e2bc08431bd9	f	2024-12-10 13:27:29.977418+00	2024-12-10 13:27:29.977418+00	uoz-gxr43pVGqEkod1-gog	db09d6bd-540b-4c85-8968-a610d88dbe23
 \.
 
 
@@ -3447,7 +3596,7 @@ COPY auth.sessions (id, user_id, created_at, updated_at, factor_id, aal, not_aft
 6fb858d0-e4de-4622-847f-a730665ee4ff	36837910-176b-48b8-9a49-e2bc08431bd9	2024-11-19 16:36:13.103975+00	2024-11-19 16:36:13.103975+00	\N	aal1	\N	\N	Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Safari/605.1.15	104.28.47.230	\N
 04a70cd0-dbae-44a5-9d2c-a566d9aa5c3b	36837910-176b-48b8-9a49-e2bc08431bd9	2024-11-19 16:45:15.00192+00	2024-11-25 16:05:20.46177+00	\N	aal1	\N	2024-11-25 16:05:20.4617	Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Safari/605.1.15	146.75.208.29	\N
 d57ce5bf-6ae1-4cab-ad62-d3f360bd0796	36837910-176b-48b8-9a49-e2bc08431bd9	2024-11-22 04:39:38.239729+00	2024-11-22 04:39:38.239729+00	\N	aal1	\N	\N	Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Safari/605.1.15	172.225.84.100	\N
-db09d6bd-540b-4c85-8968-a610d88dbe23	36837910-176b-48b8-9a49-e2bc08431bd9	2024-12-06 18:57:55.284277+00	2024-12-09 16:51:26.249044+00	\N	aal1	\N	2024-12-09 16:51:26.248963	Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Safari/605.1.15	172.225.84.154	\N
+db09d6bd-540b-4c85-8968-a610d88dbe23	36837910-176b-48b8-9a49-e2bc08431bd9	2024-12-06 18:57:55.284277+00	2024-12-10 13:27:29.988917+00	\N	aal1	\N	2024-12-10 13:27:29.987548	Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Safari/605.1.15	138.84.34.238	\N
 \.
 
 
@@ -3473,7 +3622,7 @@ COPY auth.sso_providers (id, resource_id, created_at, updated_at) FROM stdin;
 
 COPY auth.users (instance_id, id, aud, role, email, encrypted_password, email_confirmed_at, invited_at, confirmation_token, confirmation_sent_at, recovery_token, recovery_sent_at, email_change_token_new, email_change, email_change_sent_at, last_sign_in_at, raw_app_meta_data, raw_user_meta_data, is_super_admin, created_at, updated_at, phone, phone_confirmed_at, phone_change, phone_change_token, phone_change_sent_at, email_change_token_current, email_change_confirm_status, banned_until, reauthentication_token, reauthentication_sent_at, is_sso_user, deleted_at, is_anonymous) FROM stdin;
 00000000-0000-0000-0000-000000000000	dc1406e9-fcd3-40e2-b960-152af5211b8b	authenticated	authenticated	nicocostac@gmail.com	$2a$10$iKZlMebIC.i4U1PSCRV4TOS2mILqTz32LeEAmH9HWWjYfxj/oOajS	2024-11-05 23:00:45.204697+00	\N		\N		\N			\N	2024-11-07 22:04:59.56634+00	{"provider": "email", "providers": ["email"]}	{"sub": "dc1406e9-fcd3-40e2-b960-152af5211b8b", "email": "nicocostac@gmail.com", "last_name": "asdasd", "first_name": "asdasd", "email_verified": false, "phone_verified": false}	\N	2024-11-05 22:59:10.30863+00	2024-11-07 22:04:59.568722+00	\N	\N			\N		0	\N		\N	f	\N	f
-00000000-0000-0000-0000-000000000000	36837910-176b-48b8-9a49-e2bc08431bd9	authenticated	authenticated	nicocostac+nevados@gmail.com	$2a$10$uaUKe9lknKJHbgLUMp8GOOqS3KPLEa9vNrnz/3HQr3cUBWuMUg/cu	2024-11-05 20:23:34.236033+00	\N		\N		\N			\N	2024-12-06 18:57:55.283711+00	{"provider": "email", "providers": ["email"]}	{"sub": "36837910-176b-48b8-9a49-e2bc08431bd9", "email": "nicocostac+nevados@gmail.com", "email_verified": false, "phone_verified": false}	\N	2024-11-05 20:23:16.594568+00	2024-12-09 16:51:26.246759+00	\N	\N			\N		0	\N		\N	f	\N	f
+00000000-0000-0000-0000-000000000000	36837910-176b-48b8-9a49-e2bc08431bd9	authenticated	authenticated	nicocostac+nevados@gmail.com	$2a$10$uaUKe9lknKJHbgLUMp8GOOqS3KPLEa9vNrnz/3HQr3cUBWuMUg/cu	2024-11-05 20:23:34.236033+00	\N		\N		\N			\N	2024-12-06 18:57:55.283711+00	{"provider": "email", "providers": ["email"]}	{"sub": "36837910-176b-48b8-9a49-e2bc08431bd9", "email": "nicocostac+nevados@gmail.com", "email_verified": false, "phone_verified": false}	\N	2024-11-05 20:23:16.594568+00	2024-12-10 13:27:29.981084+00	\N	\N			\N		0	\N		\N	f	\N	f
 \.
 
 
@@ -3505,8 +3654,18 @@ be87ece8-a46d-430e-9e94-8abe40668575	Calera de Tango	active	2024-11-22 22:22:19.
 --
 
 COPY public.client_addresses (id, client_id, street_address, additional_info, is_default, created_at, updated_at, borough_id, neighborhood_id, latitude, longitude, contact_person) FROM stdin;
-619e3d43-f3a4-4476-9ecc-c9ab2afe7453	13cc520b-a18d-4ebf-a4e4-aed7f1e22a7e	Av. Jorge Montt 535		f	2024-11-21 18:17:28.05511+00	2024-11-22 04:13:49.08852+00	1bd0af9e-f376-48ea-999d-5858cb39f9e8	\N	-33.59756670	-70.85400920	Nicolas Costa
-d41cf0f8-0aea-4f0c-9a6e-e9aa4005990e	13cc520b-a18d-4ebf-a4e4-aed7f1e22a7e	Avenida Vicuña Mackenna 3738		t	2024-11-07 02:25:02.430644+00	2024-11-22 04:13:49.08852+00	1bd0af9e-f376-48ea-999d-5858cb39f9e8	\N	-33.61151100	-70.90110550	Nicolas Costa
+4bbfc4a6-92f7-474d-97fc-ef43d3001aac	bdee04b5-88d3-4f0c-a5f6-88c37ace1737	Presbítero Félix Zaragoza Sésmero 2731		t	2024-12-10 13:33:21.011926+00	2024-12-10 14:02:10.078977+00	1bd0af9e-f376-48ea-999d-5858cb39f9e8	\N	-33.59498070	-70.85101270	Adalexis López
+14d0c8e2-98da-44a3-9594-37cf3de28944	410d48c2-1357-4471-9a86-ca260dd6f278	Los Maquis 1672		t	2024-12-10 13:35:28.094162+00	2024-12-10 14:02:10.953107+00	186604c8-a965-4bd0-852b-1055f4ef9209	\N	-33.56896670	-70.80653680	Adriana Goza
+25b2a515-1623-408b-8bd8-c1211d05af99	dfc19e2e-b24c-4e7a-9fd8-c7fe18f237cb	José Bernardo Suárez 1069		t	2024-12-10 13:38:55.172203+00	2024-12-10 14:02:11.815791+00	1bd0af9e-f376-48ea-999d-5858cb39f9e8	\N	-33.60809960	-70.86511600	Alejandra Duarte
+1e2ee825-0f79-452b-92eb-5259ea0e7436	fddec35e-5fc5-443b-8249-49835c4f9da8	Miraflores 1337	Casa 145	t	2024-12-10 13:41:55.071575+00	2024-12-10 14:02:12.62131+00	1bd0af9e-f376-48ea-999d-5858cb39f9e8	\N	-33.60043840	-70.86423010	Alejandra León
+08ed5f2a-e0b7-498b-b8f8-76ae65560131	215bf1ed-6208-4220-a889-ebe4b4715e15	Miraflores 1337	Portería Altué	t	2024-12-10 13:44:21.290397+00	2024-12-10 14:02:13.493878+00	1bd0af9e-f376-48ea-999d-5858cb39f9e8	0f84a81f-6f4d-430e-9597-03f70dd4e9d9	-33.60044250	-70.86419660	Alexis Contreras
+ac97850e-a809-44fa-a5a7-a2d79220a7a6	aa2056b9-af4f-42ac-a3e0-50fac4f9f51c	Miraflores 1337	Casa 38	t	2024-12-10 13:45:21.368358+00	2024-12-10 14:02:14.056697+00	1bd0af9e-f376-48ea-999d-5858cb39f9e8	0f84a81f-6f4d-430e-9597-03f70dd4e9d9	-33.60044250	-70.86419660	Alfredo Franco
+8dc1b905-2655-42d9-bcc0-734db79b293c	c0519100-db35-4f5f-81f7-2a79d080d558	Miraflores 1135	Casa C	t	2024-12-10 13:57:12.676042+00	2024-12-10 14:02:14.864752+00	1bd0af9e-f376-48ea-999d-5858cb39f9e8	dbf126d9-d719-4760-b87b-3ac2ae662f89	-33.60078760	-70.86226760	Ana Maía Durán
+9ae3212c-679a-4761-a8f3-8328c6e37cec	c48b8200-a21f-438b-b61b-94994399d1ad	Padre José Gregorio Mesa 3038		t	2024-12-10 14:00:12.331323+00	2024-12-10 14:02:15.668647+00	1bd0af9e-f376-48ea-999d-5858cb39f9e8	\N	-33.59996250	-70.86249010	Ana María Garrido
+16aa1f88-21bb-430d-9c0d-c4f8771ebdc5	8dd56a6e-378d-4752-b08a-3f2eb3f177d4	Radal Siete Tazas 1271		t	2024-12-10 14:06:16.604809+00	2024-12-10 14:13:28.603858+00	186604c8-a965-4bd0-852b-1055f4ef9209	\N	-33.57257720	-70.79868050	Andrés Carrión
+66b809e0-cdd9-49b6-bf81-738494f57889	2d3fd002-9602-4920-9c9d-3abc738d4feb	Totoralillo 235		t	2024-12-10 14:07:21.46695+00	2024-12-10 14:13:29.313666+00	96d99b1a-95fe-45f5-9c8f-d5d7439912a0	\N	-33.52545730	-70.78750800	Ángela Aguayo
+109c6864-55e7-409a-9035-a261ef1f33ac	07042a4b-93af-4876-9392-2610ec62a209	Alberto Blest Gana 554		t	2024-12-10 14:08:03.202421+00	2024-12-10 14:13:30.036474+00	186604c8-a965-4bd0-852b-1055f4ef9209	\N	-33.56357340	-70.79934940	Angélica Jiménez
+37a897f5-424a-4849-9929-428bfed1396b	0562054e-e962-42da-99f4-9fa70862ab4e	Miraflores 1337	Casa 74	t	2024-12-10 14:09:04.429009+00	2024-12-10 14:13:30.537809+00	1bd0af9e-f376-48ea-999d-5858cb39f9e8	0f84a81f-6f4d-430e-9597-03f70dd4e9d9	-33.60044250	-70.86419660	Aracely González
 \.
 
 
@@ -3515,7 +3674,6 @@ d41cf0f8-0aea-4f0c-9a6e-e9aa4005990e	13cc520b-a18d-4ebf-a4e4-aed7f1e22a7e	Avenid
 --
 
 COPY public.client_prices (id, client_id, product_id, discount_percentage, final_price, notes, created_at, updated_at, start_date, end_date) FROM stdin;
-3a0e8e81-f955-434a-b52c-6bf264258ecf	13cc520b-a18d-4ebf-a4e4-aed7f1e22a7e	492d2aa4-2135-4a62-860b-ac541aa5717b	37.50	1250.00		2024-11-22 03:21:44.653926+00	2024-11-22 03:53:55.14304+00	2024-11-22	\N
 \.
 
 
@@ -3534,8 +3692,19 @@ a0782090-0b4d-45ea-a968-3cd7c34f739d	wholesale	Wholesale business customers	2024
 -- Data for Name: clients; Type: TABLE DATA; Schema: public; Owner: -
 --
 
-COPY public.clients (id, name, email, phone, notes, type_id, communication_preference, status, created_at, updated_at, created_by, is_tj) FROM stdin;
-13cc520b-a18d-4ebf-a4e4-aed7f1e22a7e	Nicolas Costa	nicocostac@gmail.com	12312313		2312066a-44b2-4e6d-8cf5-1813dbc9d948	email	active	2024-11-07 01:16:34.542129+00	2024-11-22 04:13:53.726687+00	36837910-176b-48b8-9a49-e2bc08431bd9	f
+COPY public.clients (id, name, email, phone, notes, type_id, communication_preference, status, created_at, updated_at, created_by, is_tj, phone_2) FROM stdin;
+bdee04b5-88d3-4f0c-a5f6-88c37ace1737	Adalexis López		+56942418120		2312066a-44b2-4e6d-8cf5-1813dbc9d948	whatsapp	active	2024-12-10 13:33:20.681488+00	2024-12-10 13:33:20.681488+00	36837910-176b-48b8-9a49-e2bc08431bd9	f	\N
+410d48c2-1357-4471-9a86-ca260dd6f278	Adriana Goza		+56978445620		2312066a-44b2-4e6d-8cf5-1813dbc9d948	whatsapp	active	2024-12-10 13:35:27.950443+00	2024-12-10 13:35:27.950443+00	36837910-176b-48b8-9a49-e2bc08431bd9	f	\N
+dfc19e2e-b24c-4e7a-9fd8-c7fe18f237cb	Alejandra Duarte		+56949714601		2312066a-44b2-4e6d-8cf5-1813dbc9d948	whatsapp	active	2024-12-10 13:38:54.990451+00	2024-12-10 13:38:54.990451+00	36837910-176b-48b8-9a49-e2bc08431bd9	f	\N
+fddec35e-5fc5-443b-8249-49835c4f9da8	Alejandra León		+56986690725		2312066a-44b2-4e6d-8cf5-1813dbc9d948	whatsapp	active	2024-12-10 13:41:54.882186+00	2024-12-10 13:41:54.882186+00	36837910-176b-48b8-9a49-e2bc08431bd9	f	\N
+215bf1ed-6208-4220-a889-ebe4b4715e15	Alexis Contreras		+56993480977		2312066a-44b2-4e6d-8cf5-1813dbc9d948	whatsapp	active	2024-12-10 13:44:21.027304+00	2024-12-10 13:44:21.027304+00	36837910-176b-48b8-9a49-e2bc08431bd9	f	\N
+aa2056b9-af4f-42ac-a3e0-50fac4f9f51c	Alfredo Franco		+56923720229		2312066a-44b2-4e6d-8cf5-1813dbc9d948	whatsapp	active	2024-12-10 13:45:21.215566+00	2024-12-10 13:45:21.215566+00	36837910-176b-48b8-9a49-e2bc08431bd9	f	\N
+c0519100-db35-4f5f-81f7-2a79d080d558	Ana Maía Durán		+56959165860		2312066a-44b2-4e6d-8cf5-1813dbc9d948	whatsapp	active	2024-12-10 13:57:12.440398+00	2024-12-10 13:58:40.346041+00	36837910-176b-48b8-9a49-e2bc08431bd9	f	+56939484251
+c48b8200-a21f-438b-b61b-94994399d1ad	Ana María Garrido		+56958411051		2312066a-44b2-4e6d-8cf5-1813dbc9d948	whatsapp	active	2024-12-10 14:00:12.167768+00	2024-12-10 14:01:35.74175+00	36837910-176b-48b8-9a49-e2bc08431bd9	f	+56223158190
+8dd56a6e-378d-4752-b08a-3f2eb3f177d4	Andrés Carrión		+56982001714		2312066a-44b2-4e6d-8cf5-1813dbc9d948	whatsapp	active	2024-12-10 14:06:16.412806+00	2024-12-10 14:06:16.412806+00	36837910-176b-48b8-9a49-e2bc08431bd9	t	
+2d3fd002-9602-4920-9c9d-3abc738d4feb	Ángela Aguayo		+56964771723		2312066a-44b2-4e6d-8cf5-1813dbc9d948	whatsapp	active	2024-12-10 14:07:21.162824+00	2024-12-10 14:07:21.162824+00	36837910-176b-48b8-9a49-e2bc08431bd9	f	
+07042a4b-93af-4876-9392-2610ec62a209	Angélica Jiménez		+56981324858		2312066a-44b2-4e6d-8cf5-1813dbc9d948	whatsapp	active	2024-12-10 14:08:02.984819+00	2024-12-10 14:08:02.984819+00	36837910-176b-48b8-9a49-e2bc08431bd9	f	
+0562054e-e962-42da-99f4-9fa70862ab4e	Aracely González		+56975240179		2312066a-44b2-4e6d-8cf5-1813dbc9d948	whatsapp	active	2024-12-10 14:09:04.246667+00	2024-12-10 14:09:04.246667+00	36837910-176b-48b8-9a49-e2bc08431bd9	f	
 \.
 
 
@@ -3549,6 +3718,7 @@ COPY public.mixed_bundle_items (id, bundle_id, product_id, quantity, created_at)
 53750dca-dd83-4279-9383-01467d1bec76	4076a6d8-ca49-4d78-91ea-d5f15736ac9e	aa5fced8-b36c-4196-9bcf-a36bb2204cd3	2.00	2024-12-09 15:28:41.239489+00
 3819a735-569e-4620-8303-fd9197f50dab	4076a6d8-ca49-4d78-91ea-d5f15736ac9e	fc03bf9b-d474-4e05-8796-1a002501e7c6	2.00	2024-12-09 15:28:41.239489+00
 81319c53-b804-4e6f-87e2-4c94ccfb4651	4076a6d8-ca49-4d78-91ea-d5f15736ac9e	71d896bf-921a-40aa-9e59-162c912ebf8d	1.00	2024-12-09 15:28:41.239489+00
+84423c35-f6cf-4312-b711-5625c4d62bc6	ec2de1a7-8a75-4869-8c8a-d3712ebe3ef7	aa5fced8-b36c-4196-9bcf-a36bb2204cd3	10.00	2024-12-09 18:09:51.812819+00
 \.
 
 
@@ -3560,6 +3730,7 @@ COPY public.mixed_bundles (id, name, description, total_price, status, created_a
 e7c246b8-5e6f-4fea-9848-d776c8c1cdd2	2 Recargas de 20L		5000.00	active	2024-12-09 14:35:01.710765+00	2024-12-09 15:09:31.919259+00	\N	\N	2024-12-09	\N
 1c081b11-f94a-4b88-8d79-98b1fe613cce	2 Recargas de 10L		4000.00	active	2024-12-09 14:48:12.151735+00	2024-12-09 15:09:39.915536+00	\N	\N	2024-12-09	\N
 4076a6d8-ca49-4d78-91ea-d5f15736ac9e	Pack Inicial 	Pack Inicial para nuevos clientes	15000.00	active	2024-12-09 15:16:49.027932+00	2024-12-09 15:28:40.486522+00	\N	\N	2024-12-09	\N
+ec2de1a7-8a75-4869-8c8a-d3712ebe3ef7	10 Recargas de 20L		20000.00	active	2024-12-09 18:09:51.639962+00	2024-12-09 18:09:51.639962+00	\N	\N	2024-12-09	\N
 \.
 
 
@@ -3573,6 +3744,8 @@ COPY public.neighborhoods (id, name, borough_id, status, created_at, updated_at)
 84eac37e-b169-4ec1-959c-1e24f6d46c27	Ciudad Satélite	96d99b1a-95fe-45f5-9c8f-d5d7439912a0	active	2024-11-07 22:44:03.112244+00	2024-11-22 22:21:41.657322+00
 9101c473-d055-4d98-a03b-45927804b672	El Oliveto	4bf42445-430d-4f23-928e-8a83e69ca9c9	active	2024-11-22 22:23:04.718454+00	2024-11-22 22:23:04.718454+00
 fe8a2510-1eb0-4227-9f0a-f62e9fd1d69a	El Abrazo	96d99b1a-95fe-45f5-9c8f-d5d7439912a0	active	2024-11-22 22:24:15.978664+00	2024-11-22 22:24:15.978664+00
+0f84a81f-6f4d-430e-9597-03f70dd4e9d9	Condominio Altué	1bd0af9e-f376-48ea-999d-5858cb39f9e8	active	2024-12-10 13:42:22.550754+00	2024-12-10 13:42:22.550754+00
+dbf126d9-d719-4760-b87b-3ac2ae662f89	Condominio Elqui II	1bd0af9e-f376-48ea-999d-5858cb39f9e8	active	2024-12-10 13:57:41.037202+00	2024-12-10 13:57:41.037202+00
 \.
 
 
@@ -3652,11 +3825,6 @@ dc1406e9-fcd3-40e2-b960-152af5211b8b	2024-11-05 22:59:12.338718+00	2024-11-07 22
 --
 
 COPY public.sale_items (id, sale_id, product_id, item_number, quantity, unit_price, total_price, discount_percentage, notes, created_at) FROM stdin;
-cf60c3ca-8168-4c03-85bc-cb4ff80ef7bd	f608b6c7-cd23-4040-967d-019bcc41f4c2	aa5fced8-b36c-4196-9bcf-a36bb2204cd3	1	5.00	2000.00	10000.00	0.00	\N	2024-11-21 18:18:14.994002+00
-f601fd15-a50a-4fcd-bf92-4bec8aa8922c	f7bbbaa3-e659-4a79-9516-a12aa1823b10	492d2aa4-2135-4a62-860b-ac541aa5717b	1	4.00	1250.00	5000.00	0.00	\N	2024-11-22 04:12:02.73564+00
-232a79fe-68ee-488e-9089-b74327f5696d	f7bbbaa3-e659-4a79-9516-a12aa1823b10	aa5fced8-b36c-4196-9bcf-a36bb2204cd3	2	1.00	2500.00	2500.00	0.00	\N	2024-11-22 04:58:26.407052+00
-4aab96b7-657d-4225-990b-7fd96b468c17	fb50dcc9-3e7d-498d-a4d1-da3f90a41460	aa5fced8-b36c-4196-9bcf-a36bb2204cd3	1	3.00	2500.00	7500.00	0.00	\N	2024-11-07 22:22:20.431841+00
-9818ec8f-caa9-4dae-92d7-6a4fc9c5d48d	fb50dcc9-3e7d-498d-a4d1-da3f90a41460	aa5fced8-b36c-4196-9bcf-a36bb2204cd3	2	1.00	2500.00	2500.00	0.00	\N	2024-11-19 16:54:26.918059+00
 \.
 
 
@@ -3665,9 +3833,6 @@ f601fd15-a50a-4fcd-bf92-4bec8aa8922c	f7bbbaa3-e659-4a79-9516-a12aa1823b10	492d2a
 --
 
 COPY public.sales (id, client_id, created_by, sale_date, delivery_date, delivery_address_id, status, total_amount, notes, payment_status, payment_method_id, payment_date, payment_notes, created_at, updated_at, salesperson_id, product_id, quantity) FROM stdin;
-f608b6c7-cd23-4040-967d-019bcc41f4c2	13cc520b-a18d-4ebf-a4e4-aed7f1e22a7e	36837910-176b-48b8-9a49-e2bc08431bd9	2024-11-21	2024-11-22	619e3d43-f3a4-4476-9ecc-c9ab2afe7453	active	10000.00		paid	f4ee3668-57e1-4126-b64a-3fafe32201bc	2024-11-21 00:00:00+00	\N	2024-11-21 18:18:14.761689+00	2024-11-21 18:18:14.761689+00	\N	\N	1
-f7bbbaa3-e659-4a79-9516-a12aa1823b10	13cc520b-a18d-4ebf-a4e4-aed7f1e22a7e	36837910-176b-48b8-9a49-e2bc08431bd9	2024-11-22	2024-11-22	d41cf0f8-0aea-4f0c-9a6e-e9aa4005990e	active	7500.00		paid	f4ee3668-57e1-4126-b64a-3fafe32201bc	2024-11-22 00:00:00+00	\N	2024-11-22 04:12:02.520607+00	2024-11-22 04:59:17.842+00	\N	\N	1
-fb50dcc9-3e7d-498d-a4d1-da3f90a41460	13cc520b-a18d-4ebf-a4e4-aed7f1e22a7e	36837910-176b-48b8-9a49-e2bc08431bd9	2024-11-08	2024-11-20	d41cf0f8-0aea-4f0c-9a6e-e9aa4005990e	active	10000.00		paid	3fa46566-bc26-4feb-a60a-762c0144bc7a	2024-11-06 00:00:00+00		2024-11-07 22:22:20.200094+00	2024-11-22 18:41:42.472+00	\N	\N	1
 \.
 
 
@@ -3820,7 +3985,7 @@ COPY vault.secrets (id, name, description, secret, key_id, nonce, created_at, up
 -- Name: refresh_tokens_id_seq; Type: SEQUENCE SET; Schema: auth; Owner: -
 --
 
-SELECT pg_catalog.setval('auth.refresh_tokens_id_seq', 125, true);
+SELECT pg_catalog.setval('auth.refresh_tokens_id_seq', 129, true);
 
 
 --
@@ -6352,6 +6517,15 @@ GRANT ALL ON FUNCTION pgsodium.crypto_aead_det_keygen() TO service_role;
 
 
 --
+-- Name: FUNCTION create_sale_with_items(p_client_id uuid, p_sale_date timestamp with time zone, p_delivery_date timestamp with time zone, p_delivery_address_id uuid, p_total_amount numeric, p_notes text, p_items public.sale_item_type[]); Type: ACL; Schema: public; Owner: -
+--
+
+GRANT ALL ON FUNCTION public.create_sale_with_items(p_client_id uuid, p_sale_date timestamp with time zone, p_delivery_date timestamp with time zone, p_delivery_address_id uuid, p_total_amount numeric, p_notes text, p_items public.sale_item_type[]) TO anon;
+GRANT ALL ON FUNCTION public.create_sale_with_items(p_client_id uuid, p_sale_date timestamp with time zone, p_delivery_date timestamp with time zone, p_delivery_address_id uuid, p_total_amount numeric, p_notes text, p_items public.sale_item_type[]) TO authenticated;
+GRANT ALL ON FUNCTION public.create_sale_with_items(p_client_id uuid, p_sale_date timestamp with time zone, p_delivery_date timestamp with time zone, p_delivery_address_id uuid, p_total_amount numeric, p_notes text, p_items public.sale_item_type[]) TO service_role;
+
+
+--
 -- Name: FUNCTION ensure_single_default_address(); Type: ACL; Schema: public; Owner: -
 --
 
@@ -6475,6 +6649,15 @@ GRANT ALL ON FUNCTION public.update_product_price(p_new_price numeric, p_product
 GRANT ALL ON FUNCTION public.update_product_price(p_product_id uuid, p_new_price integer, p_valid_from date, p_user_id uuid) TO anon;
 GRANT ALL ON FUNCTION public.update_product_price(p_product_id uuid, p_new_price integer, p_valid_from date, p_user_id uuid) TO authenticated;
 GRANT ALL ON FUNCTION public.update_product_price(p_product_id uuid, p_new_price integer, p_valid_from date, p_user_id uuid) TO service_role;
+
+
+--
+-- Name: FUNCTION update_sale_with_items(p_sale_id uuid, p_client_id uuid, p_sale_date timestamp with time zone, p_delivery_date timestamp with time zone, p_delivery_address_id uuid, p_total_amount numeric, p_notes text, p_items public.sale_item_type[], p_payment_status text, p_payment_method_id uuid, p_payment_date timestamp with time zone, p_payment_notes text); Type: ACL; Schema: public; Owner: -
+--
+
+GRANT ALL ON FUNCTION public.update_sale_with_items(p_sale_id uuid, p_client_id uuid, p_sale_date timestamp with time zone, p_delivery_date timestamp with time zone, p_delivery_address_id uuid, p_total_amount numeric, p_notes text, p_items public.sale_item_type[], p_payment_status text, p_payment_method_id uuid, p_payment_date timestamp with time zone, p_payment_notes text) TO anon;
+GRANT ALL ON FUNCTION public.update_sale_with_items(p_sale_id uuid, p_client_id uuid, p_sale_date timestamp with time zone, p_delivery_date timestamp with time zone, p_delivery_address_id uuid, p_total_amount numeric, p_notes text, p_items public.sale_item_type[], p_payment_status text, p_payment_method_id uuid, p_payment_date timestamp with time zone, p_payment_notes text) TO authenticated;
+GRANT ALL ON FUNCTION public.update_sale_with_items(p_sale_id uuid, p_client_id uuid, p_sale_date timestamp with time zone, p_delivery_date timestamp with time zone, p_delivery_address_id uuid, p_total_amount numeric, p_notes text, p_items public.sale_item_type[], p_payment_status text, p_payment_method_id uuid, p_payment_date timestamp with time zone, p_payment_notes text) TO service_role;
 
 
 --

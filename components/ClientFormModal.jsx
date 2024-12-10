@@ -22,6 +22,7 @@ export default function ClientFormModal({
     name: '',
     email: '',
     phone: '',
+    phone_2: '',
     notes: '',
     type_id: clientTypes.find(type => type.name.toLowerCase() === 'retail')?.id || '',
     communication_preference: 'whatsapp',
@@ -44,7 +45,8 @@ export default function ClientFormModal({
       setFormData({
         name: editingClient.name || '',
         email: editingClient.email || '',
-        phone: editingClient.phone || '',
+        phone: formatPhoneNumber(editingClient.phone || ''),
+        phone_2: formatPhoneNumber(editingClient.phone_2 || ''),
         notes: editingClient.notes || '',
         type_id: editingClient.type_id || clientTypes.find(type => type.name.toLowerCase() === 'retail')?.id || '',
         communication_preference: editingClient.communication_preference || 'whatsapp',
@@ -63,6 +65,7 @@ export default function ClientFormModal({
         name: '',
         email: '',
         phone: '',
+        phone_2: '',
         notes: '',
         type_id: clientTypes.find(type => type.name.toLowerCase() === 'retail')?.id || '',
         communication_preference: 'whatsapp',
@@ -292,6 +295,24 @@ export default function ClientFormModal({
     }
   }
 
+  const formatPhoneNumber = (phone) => {
+    // Remove all spaces and any other non-essential characters
+    return phone.replace(/\s+/g, '');
+  };
+
+  const handlePhoneChange = (e, field) => {
+    const formattedPhone = formatPhoneNumber(e.target.value);
+    setFormData(prev => ({ ...prev, [field]: formattedPhone }));
+  };
+
+  const openInGoogleMaps = (address) => {
+    if (address.latitude && address.longitude) {
+      const fullAddress = `${address.street_address}, ${address.boroughs?.name}${address.neighborhoods?.name ? `, ${address.neighborhoods.name}` : ''}, Chile`;
+      const encodedAddress = encodeURIComponent(fullAddress);
+      window.open(`https://www.google.com/maps/search/?api=1&query=${encodedAddress}&query_place_id=${address.latitude},${address.longitude}`, '_blank');
+    }
+  };
+
   if (!isOpen) return null
 
   const handleSubmit = async (e) => {
@@ -310,6 +331,7 @@ export default function ClientFormModal({
             name: formData.name,
             email: formData.email,
             phone: formData.phone,
+            phone_2: formData.phone_2,
             notes: formData.notes,
             type_id: formData.type_id,
             communication_preference: formData.communication_preference,
@@ -329,6 +351,7 @@ export default function ClientFormModal({
               name: formData.name,
               email: formData.email,
               phone: formData.phone,
+              phone_2: formData.phone_2,
               notes: formData.notes,
               type_id: formData.type_id,
               communication_preference: formData.communication_preference,
@@ -376,6 +399,7 @@ export default function ClientFormModal({
         name: '',
         email: '',
         phone: '',
+        phone_2: '',
         notes: '',
         type_id: clientTypes.find(type => type.name.toLowerCase() === 'retail')?.id || '',
         communication_preference: 'whatsapp',
@@ -403,12 +427,19 @@ export default function ClientFormModal({
       const isFirstAddress = addresses.length === 0;
       const newAddress = {
         ...addressData,
-        is_default: isFirstAddress
+        is_default: isFirstAddress,
+        // Set contact person to client name if empty
+        contact_person: addressData.contact_person || formData.name
       };
       setAddresses([...addresses, newAddress]);
     } else {
       // For existing clients, save address directly to database
-      handleAddressSubmit(addressData);
+      const updatedAddressData = {
+        ...addressData,
+        // Set contact person to client name if empty
+        contact_person: addressData.contact_person || editingClient.name
+      };
+      handleAddressSubmit(updatedAddressData);
     }
   };
 
@@ -442,7 +473,7 @@ export default function ClientFormModal({
               required
             />
 
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-3 gap-4">
               <Input
                 type="email"
                 name="email"
@@ -454,9 +485,17 @@ export default function ClientFormModal({
               <Input
                 type="tel"
                 name="phone"
-                placeholder="Phone"
+                placeholder="Primary Phone"
                 value={formData.phone}
-                onChange={(e) => setFormData(prev => ({ ...prev, phone: e.target.value }))}
+                onChange={(e) => handlePhoneChange(e, 'phone')}
+              />
+
+              <Input
+                type="tel"
+                name="phone_2"
+                placeholder="Secondary Phone"
+                value={formData.phone_2}
+                onChange={(e) => handlePhoneChange(e, 'phone_2')}
               />
             </div>
           </div>
@@ -502,7 +541,19 @@ export default function ClientFormModal({
                       )}
                     </div>
                   </div>
-                  <div className="flex gap-2">
+                  <div className="flex space-x-2">
+                    {address.latitude && address.longitude && (
+                      <button
+                        type="button"
+                        onClick={() => openInGoogleMaps(address)}
+                        className="text-blue-600 hover:text-blue-800"
+                        title="Open in Google Maps"
+                      >
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 24 24" fill="currentColor">
+                          <path d="M12 0C7.802 0 4 3.403 4 7.602C4 11.8 7.469 16.812 12 24C16.531 16.812 20 11.8 20 7.602C20 3.403 16.199 0 12 0ZM12 11C10.343 11 9 9.657 9 8C9 6.343 10.343 5 12 5C13.657 5 15 6.343 15 8C15 9.657 13.657 11 12 11Z"/>
+                        </svg>
+                      </button>
+                    )}
                     <Button
                       type="button"
                       variant="ghost"

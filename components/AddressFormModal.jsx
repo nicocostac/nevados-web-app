@@ -158,7 +158,7 @@ export default function AddressFormModal({
               type="text"
               value={formData.contact_person}
               onChange={(e) => setFormData({ ...formData, contact_person: e.target.value })}
-              required
+              placeholder="Optional - defaults to client name"
             />
           </div>
 
