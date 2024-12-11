@@ -374,16 +374,29 @@ export default function ClientFormModal({
   };
 
   const openInGoogleMaps = (address) => {
+    // Debug logs for address object
+    console.log('Address object:', address);
+    console.log('Borough name:', address._boroughName);
+    console.log('Neighborhood name:', address._neighborhoodName);
+
     // Construct full address string
-    const fullAddress = `${address.street_address}, ${address.boroughs?.name}${address.neighborhoods?.name ? `, ${address.neighborhoods.name}` : ''}, Santiago, Chile`;
+    const fullAddress = `${address.street_address}, ${address._boroughName || ''}${address._neighborhoodName ? `, ${address._neighborhoodName}` : ''}, Santiago, Chile`;
     const encodedAddress = encodeURIComponent(fullAddress);
+
+    // Debug logs for constructed URL
+    console.log('Full address:', fullAddress);
+    console.log('Encoded address:', encodedAddress);
 
     if (address.latitude && address.longitude) {
       // Open using coordinates with address label for the pin
-      window.open(`https://www.google.com/maps/search/${encodedAddress}/@${address.latitude},${address.longitude},17z`, '_blank');
+      const url = `https://www.google.com/maps/search/${encodedAddress}/@${address.latitude},${address.longitude},17z`;
+      console.log('Opening URL with coordinates:', url);
+      window.open(url, '_blank');
     } else {
       // Fallback to address search if coordinates are not available
-      window.open(`https://www.google.com/maps/search/?api=1&query=${encodedAddress}`, '_blank');
+      const url = `https://www.google.com/maps/search/?api=1&query=${encodedAddress}`;
+      console.log('Opening URL without coordinates:', url);
+      window.open(url, '_blank');
     }
   };
 

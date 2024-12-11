@@ -152,7 +152,21 @@ function SalesManagement() {
           payment_method:payment_methods(name),
           payment_date,
           notes,
+          payment_notes,
+          payment_method_id,
           client:clients(name),
+          sale_items:sale_items(
+            id,
+            quantity,
+            unit_price,
+            total_price,
+            product:products(
+              id,
+              name,
+              description,
+              status
+            )
+          ),
           delivery_address:client_addresses!left(
             id,
             street_address,
@@ -245,21 +259,7 @@ function SalesManagement() {
         return;
       }
 
-      // Fetch items for the sales
-      const { data: itemsData, error: itemsError } = await supabase
-        .from('sale_items')
-        .select('*')
-        .in('sale_id', salesData.map(sale => sale.id));
-
-      if (itemsError) throw itemsError;
-
-      const salesWithItems = salesData.map(sale => ({
-        ...sale,
-        sale_items: itemsData.filter(item => item.sale_id === sale.id)
-      }));
-
-      console.log(`Setting ${salesWithItems.length} sales for page ${currentPage}`);
-      setSales(salesWithItems);
+      setSales(salesData);
       setIsLoading(false);
     } catch (error) {
       console.error('Error in fetchSales:', error);
