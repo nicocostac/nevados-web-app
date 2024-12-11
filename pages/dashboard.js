@@ -10,7 +10,9 @@ import {
   Filter,
   X,
   BoxIcon,
-  AlertTriangle 
+  AlertTriangle,
+  ChevronLeft,
+  ChevronRight
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -30,10 +32,27 @@ import {
   Legend
 } from 'recharts'
 import { Card, ProgressBar } from '@tremor/react'
+import { 
+  format, 
+  startOfDay, 
+  endOfDay, 
+  subDays, 
+  subMonths, 
+  subYears, 
+  addDays, 
+  addMonths, 
+  addYears,
+  startOfWeek,
+  endOfWeek,
+  eachDayOfInterval,
+  isSameMonth,
+  lastDayOfMonth
+} from 'date-fns'
 
 function Dashboard() {
   const { user } = useAuth()
   const [timeRange, setTimeRange] = useState('week') // week, month, year
+  const [currentDate, setCurrentDate] = useState(startOfWeek(new Date(), { weekStartsOn: 1 }))
   const [showFilters, setShowFilters] = useState(false)
   const [filters, setFilters] = useState({
     minAmount: '',
@@ -56,61 +75,160 @@ function Dashboard() {
 
   // Helper function to get week of the month
   const getWeekOfMonth = (date) => {
-    const d = new Date(date);
-    const firstDay = new Date(d.getFullYear(), d.getMonth(), 1);
-    const firstDayWeek = firstDay.getDay();
-    const dayOfMonth = d.getDate();
-    
-    // Calculate week number (1-based)
-    const weekNumber = Math.ceil((dayOfMonth + firstDayWeek) / 7);
-    
-    return `Week ${weekNumber}`;
+    return Math.ceil((date.getUTCDate() + (new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1)).getUTCDay())) / 7)
   }
 
   // Helper function to format date based on time range
-  const formatDateForRange = (date, range) => {
-    const d = new Date(date);
+  const formatDateForRange = (dateStr, range) => {
+    // Parse the date string and create a UTC date
+    const [year, month, day] = dateStr.split('-').map(Number)
+    
+    console.log('Formatting date:', {
+      input: dateStr,
+      year,
+      month,
+      day,
+      range
+    })
+    
+    let result
     switch (range) {
-      case 'week':
-        return d.toLocaleDateString('en-US', { weekday: 'short' });
-      case 'month':
-        return getWeekOfMonth(d);
-      case 'year':
-        return d.toLocaleDateString('en-US', { month: 'short' });
+      case 'week': {
+        // Get day name directly from date components
+        const date = new Date(Date.UTC(year, month - 1, day))
+        const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+        const dayOfWeek = date.getUTCDay()
+        const dayName = dayNames[dayOfWeek]
+        
+        // Format the day number with leading zero
+        const dayNum = day.toString().padStart(2, '0')
+        result = `${dayNum}/${month}`
+        break;
+      }
+      case 'month': {
+        // Get the start and end date of the week
+        const weekDate = new Date(Date.UTC(year, month - 1, day))
+        const weekStart = startOfWeek(weekDate, { weekStartsOn: 1 })
+        const weekEnd = endOfWeek(weekDate, { weekStartsOn: 1 })
+        const currentMonth = month
+
+        // Adjust start date if it's in previous month
+        const startDay = isSameMonth(weekStart, weekDate) 
+          ? format(weekStart, 'dd')
+          : '01'
+        
+        // Adjust end date if it's in next month
+        const endDay = isSameMonth(weekEnd, weekDate)
+          ? format(weekEnd, 'dd')
+          : format(lastDayOfMonth(weekDate), 'dd')
+
+        result = `${startDay}-${endDay}/${currentMonth}`
+        break;
+      }
+      case 'year': {
+        const monthNames = [
+          'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+          'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
+        ]
+        result = monthNames[month - 1]
+        break;
+      }
       default:
-        return date;
+        result = dateStr
     }
+    
+    console.log('Format result:', {
+      input: dateStr,
+      result,
+      range
+    })
+    
+    return result
   }
 
   // Helper function to get moving average window size based on time range
   const getWindowSize = (range) => {
     switch (range) {
       case 'week':
-        return 3; // 3-day moving average
+        return 3 // 3-day moving average
       case 'month':
-        return 7; // 7-day moving average
+        return 2 // 2-week moving average
       case 'year':
-        return 30; // 30-day moving average
+        return 3 // 3-month moving average
       default:
-        return 7;
+        return 3
     }
   }
 
   // Helper function to get previous period start date
   const getPreviousPeriodStart = (date, range) => {
-    const previousStart = new Date(date)
-    switch(range) {
+    const d = new Date(date)
+    switch (range) {
       case 'week':
-        previousStart.setDate(previousStart.getDate() - 7)
+        return subDays(d, 7)
+      case 'month':
+        return subMonths(d, 1)
+      case 'year':
+        return subYears(d, 1)
+      default:
+        return d
+    }
+  }
+
+  // Helper function to format the current period label
+  const getCurrentPeriodLabel = () => {
+    switch (timeRange) {
+      case 'week': {
+        const weekStart = startOfWeek(currentDate, { weekStartsOn: 1 })
+        const weekEnd = endOfWeek(currentDate, { weekStartsOn: 1 })
+        return `${format(weekStart, 'MMM d')} - ${format(weekEnd, 'MMM d, yyyy')}`
+      }
+      case 'month':
+        return format(currentDate, 'MMMM yyyy')
+      case 'year':
+        return format(currentDate, 'yyyy')
+      default:
+        return format(currentDate, 'MMM d, yyyy')
+    }
+  }
+
+  // Navigation handlers
+  const handlePrevPeriod = () => {
+    switch (timeRange) {
+      case 'week':
+        setCurrentDate(prev => {
+          const prevWeekStart = startOfWeek(subDays(prev, 7), { weekStartsOn: 1 })
+          return prevWeekStart
+        })
         break
       case 'month':
-        previousStart.setMonth(previousStart.getMonth() - 1)
+        setCurrentDate(prev => subMonths(prev, 1))
         break
       case 'year':
-        previousStart.setFullYear(previousStart.getFullYear() - 1)
+        setCurrentDate(prev => subYears(prev, 1))
         break
     }
-    return previousStart
+  }
+
+  const handleNextPeriod = () => {
+    switch (timeRange) {
+      case 'week':
+        setCurrentDate(prev => {
+          const nextWeekStart = startOfWeek(addDays(prev, 7), { weekStartsOn: 1 })
+          return nextWeekStart
+        })
+        break
+      case 'month':
+        setCurrentDate(prev => addMonths(prev, 1))
+        break
+      case 'year':
+        setCurrentDate(prev => addYears(prev, 1))
+        break
+    }
+  }
+
+  const handleToday = () => {
+    setCurrentDate(startOfWeek(new Date(), { weekStartsOn: 1 }))
   }
 
   // Fetch dashboard data
@@ -119,20 +237,39 @@ function Dashboard() {
     setError(null)
     
     try {
-      // Get date range
-      const now = new Date()
-      let startDate = new Date()
+      // Get date range based on currentDate
+      let startDate, endDate
+      
       switch(timeRange) {
         case 'week':
-          startDate.setDate(now.getDate() - 7)
+          startDate = startOfWeek(currentDate, { weekStartsOn: 1 }) // Start on Monday
+          endDate = endOfWeek(currentDate, { weekStartsOn: 1 }) // End on Sunday
           break
         case 'month':
-          startDate.setMonth(now.getMonth() - 1)
+          startDate = new Date(currentDate.getFullYear(), currentDate.getMonth(), 1) // Start of month
+          endDate = new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0) // End of month
           break
         case 'year':
-          startDate.setFullYear(now.getFullYear() - 1)
+          startDate = new Date(currentDate.getFullYear(), 0, 1) // Start of year
+          endDate = new Date(currentDate.getFullYear(), 11, 31) // End of year
           break
       }
+
+      console.log('Date range calculation:', {
+        timeRange,
+        currentDate: format(currentDate, 'yyyy-MM-dd'),
+        startDate: format(startDate, 'yyyy-MM-dd'),
+        endDate: format(endDate, 'yyyy-MM-dd')
+      })
+
+      // Format dates for query
+      const formattedStartDate = format(startDate, 'yyyy-MM-dd')
+      const formattedEndDate = format(endDate, 'yyyy-MM-dd')
+
+      console.log('Final formatted dates:', {
+        formattedStartDate,
+        formattedEndDate
+      })
 
       // Build the sales query with filters
       let query = supabase
@@ -155,7 +292,8 @@ function Dashboard() {
             )
           )
         `)
-        .gte('sale_date', startDate.toISOString())
+        .gte('sale_date', formattedStartDate)
+        .lte('sale_date', formattedEndDate)
 
       // Apply filters
       if (filters.minAmount) {
@@ -170,6 +308,16 @@ function Dashboard() {
 
       // Execute the query
       const { data: salesData, error: salesError } = await query.order('sale_date', { ascending: false })
+
+      console.log('Query results:', {
+        startDate: formattedStartDate,
+        endDate: formattedEndDate,
+        salesCount: salesData?.length,
+        sampleDates: salesData?.slice(0, 3).map(s => ({
+          id: s.id,
+          sale_date: s.sale_date
+        }))
+      })
 
       if (salesError) throw salesError
 
@@ -212,11 +360,30 @@ function Dashboard() {
 
       // Process sales data for trends
       const salesByDate = {}
+      console.log('Processing sales data:', {
+        totalSales: salesData.length,
+        timeRange,
+        sampleSales: salesData.slice(0, 3).map(sale => ({
+          id: sale.id,
+          sale_date: sale.sale_date,
+          formatted_date: formatDateForRange(sale.sale_date, timeRange)
+        }))
+      })
+
       salesData.forEach(sale => {
-        const date = new Date(sale.sale_date)
-        const groupKey = formatDateForRange(date, timeRange)
+        const groupKey = formatDateForRange(sale.sale_date, timeRange)
+        
+        console.log('Processing sale:', {
+          sale_id: sale.id,
+          sale_date: sale.sale_date,
+          groupKey,
+          amount: sale.total_amount
+        })
+        
         salesByDate[groupKey] = (salesByDate[groupKey] || 0) + sale.total_amount
       })
+
+      console.log('Sales grouped by date:', salesByDate)
 
       // Convert to array and sort by date
       const salesTrendsArray = Object.entries(salesByDate)
@@ -226,18 +393,55 @@ function Dashboard() {
           trend: 0 // Initialize trend value
         }))
 
-      // Sort based on time range
+      console.log('Sales trends array before sorting:', salesTrendsArray)
+
+      console.log('Sorting array:', {
+        timeRange,
+        before: salesTrendsArray.map(item => ({
+          date: item.date,
+          amount: item.amount
+        }))
+      })
+
       salesTrendsArray.sort((a, b) => {
         if (timeRange === 'week') {
-          const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
-          return days.indexOf(a.date) - days.indexOf(b.date)
+          // Extract day number from "Day, DD" format
+          const aDay = parseInt(a.date.split(', ')[1])
+          const bDay = parseInt(b.date.split(', ')[1])
+          console.log('Week sorting:', {
+            a: a.date,
+            b: b.date,
+            aDay,
+            bDay
+          })
+          return aDay - bDay
         } else if (timeRange === 'month') {
-          return parseInt(a.date.split(' ')[1]) - parseInt(b.date.split(' ')[1])
+          return parseInt(a.date.split('-')[0]) - parseInt(b.date.split('-')[0])
         } else {
-          const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
-          return months.indexOf(a.date) - months.indexOf(b.date)
+          // For year view, convert month abbreviations to numbers (Jan=1, Feb=2, etc)
+          const monthToNumber = {
+            'Jan': 1, 'Feb': 2, 'Mar': 3, 'Apr': 4, 'May': 5, 'Jun': 6,
+            'Jul': 7, 'Aug': 8, 'Sep': 9, 'Oct': 10, 'Nov': 11, 'Dec': 12
+          }
+          console.log('Month comparison:', {
+            a: a.date,
+            b: b.date,
+            aNum: monthToNumber[a.date],
+            bNum: monthToNumber[b.date]
+          })
+          return monthToNumber[a.date] - monthToNumber[b.date]
         }
       })
+
+      console.log('Sorting result:', {
+        timeRange,
+        after: salesTrendsArray.map(item => ({
+          date: item.date,
+          amount: item.amount
+        }))
+      })
+
+      console.log('Sales trends array after sorting:', salesTrendsArray)
 
       // Calculate moving average for trend line
       const windowSize = getWindowSize(timeRange)
@@ -328,7 +532,7 @@ function Dashboard() {
 
   useEffect(() => {
     fetchDashboardData()
-  }, [timeRange])
+  }, [timeRange, currentDate])
 
   const stats = [
     {
@@ -379,35 +583,74 @@ function Dashboard() {
         </Alert>
       )}
 
-      {/* Time Range Filter */}
-      <div className="flex justify-between items-center">
-        <div className="flex gap-2">
+      {/* Date Navigation */}
+      <div className="flex items-center justify-between bg-white rounded-lg shadow p-4 mb-6">
+        <div className="flex items-center gap-2">
           <Button
-            variant={timeRange === 'week' ? 'default' : 'outline'}
-            onClick={() => setTimeRange('week')}
+            variant="outline"
+            size="icon"
+            onClick={handlePrevPeriod}
+            className="hover:bg-gray-100"
           >
-            Week
+            <ChevronLeft className="h-5 w-5" />
           </Button>
+          <div className="flex flex-col items-center min-w-[200px]">
+            <span className="text-xl font-semibold">{getCurrentPeriodLabel()}</span>
+            <span className="text-sm text-gray-500 capitalize">{timeRange} view</span>
+          </div>
           <Button
-            variant={timeRange === 'month' ? 'default' : 'outline'}
-            onClick={() => setTimeRange('month')}
+            variant="outline"
+            size="icon"
+            onClick={handleNextPeriod}
+            className="hover:bg-gray-100"
           >
-            Month
-          </Button>
-          <Button
-            variant={timeRange === 'year' ? 'default' : 'outline'}
-            onClick={() => setTimeRange('year')}
-          >
-            Year
+            <ChevronRight className="h-5 w-5" />
           </Button>
         </div>
-        <Button
-          variant="outline"
-          onClick={() => setShowFilters(!showFilters)}
-        >
-          <Filter className="h-4 w-4 mr-2" />
-          Filters
-        </Button>
+        <div className="flex items-center gap-4">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleToday}
+            className="hover:bg-gray-100"
+          >
+            <Calendar className="h-4 w-4 mr-2" />
+            Today
+          </Button>
+          <div className="flex items-center rounded-md border border-gray-200">
+            <Button
+              variant={timeRange === 'week' ? 'secondary' : 'ghost'}
+              size="sm"
+              onClick={() => setTimeRange('week')}
+              className="rounded-r-none border-r"
+            >
+              Week
+            </Button>
+            <Button
+              variant={timeRange === 'month' ? 'secondary' : 'ghost'}
+              size="sm"
+              onClick={() => setTimeRange('month')}
+              className="rounded-none border-r"
+            >
+              Month
+            </Button>
+            <Button
+              variant={timeRange === 'year' ? 'secondary' : 'ghost'}
+              size="sm"
+              onClick={() => setTimeRange('year')}
+              className="rounded-l-none"
+            >
+              Year
+            </Button>
+          </div>
+          <Button
+            variant="outline"
+            onClick={() => setShowFilters(!showFilters)}
+          >
+            <Filter className="h-4 w-4 mr-2" />
+            Filters
+          </Button>
+        </div>
       </div>
 
       {/* Filters Panel */}
@@ -574,34 +817,41 @@ function Dashboard() {
           Sales Trends
           <span className="text-sm font-normal text-gray-500 ml-2">
             {timeRange === 'week' ? '(3-day average)' :
-             timeRange === 'month' ? '(7-day average)' :
-             '(30-day average)'}
+             timeRange === 'month' ? '(2-week average)' :
+             '(3-month average)'}
           </span>
         </h2>
         <div className="w-full h-[400px] relative">
           {dashboardData.salesTrends.length > 0 ? (
             <ResponsiveContainer width="100%" height="100%">
-              <ComposedChart data={dashboardData.salesTrends}>
-                <CartesianGrid strokeDasharray="3 3" />
+              <ComposedChart 
+                data={timeRange === 'week' ? [...dashboardData.salesTrends].reverse() : dashboardData.salesTrends}
+                margin={{ top: 20, right: 30, bottom: 20, left: 60 }}
+                height={400}
+              >
+                <CartesianGrid strokeDasharray="3 3" vertical={false} />
                 <XAxis 
                   dataKey="date" 
                   tick={{ fontSize: 12 }}
                   interval={0}
+                  tickMargin={10}
+                  height={40}
                 />
                 <YAxis 
                   tick={{ fontSize: 12 }}
                   tickFormatter={(value) => formatCurrency(value)}
+                  width={80}
                 />
                 <Tooltip 
                   formatter={(value) => formatCurrency(value)}
                   labelFormatter={(label) => {
                     switch(timeRange) {
                       case 'week':
-                        return `Day: ${label}`
+                        return `Sales for ${label}`
                       case 'month':
-                        return `${label}`
+                        return `Week ${label}`
                       case 'year':
-                        return `Month: ${label}`
+                        return `${label} Sales`
                       default:
                         return label
                     }
