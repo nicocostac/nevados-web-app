@@ -597,13 +597,24 @@ export default function SaleFormModal({
           throw new Error('Producto inválido detectado');
         }
         
-        return {
-          productId: item.product.id,
-          quantity: Number(item.quantity),
-          unitPrice: Number(item.unitPrice),
-          totalPrice: Number(item.totalPrice),
-          discountPercentage: 0
-        };
+        // Use different format based on whether we're creating or updating
+        if (editingSale) {
+          return {
+            product_id: item.product.id,
+            quantity: Number(item.quantity),
+            unit_price: Number(item.unitPrice),
+            total_price: Number(item.totalPrice),
+            discount_percentage: 0
+          };
+        } else {
+          return {
+            productId: item.product.id,
+            quantity: Number(item.quantity),
+            unitPrice: Number(item.unitPrice),
+            totalPrice: Number(item.totalPrice),
+            discountPercentage: 0
+          };
+        }
       });
 
       console.log('Mapped items for database:', mappedItems);
