@@ -29,9 +29,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
       if (error) throw error;
       return res.status(200).json(bundles);
-    } catch (error) {
+    } catch (error: any) {
       console.error('GET bundles error:', error);
-      return res.status(500).json({ error: error.message });
+      return res.status(500).json({ error: error.message || 'An unexpected error occurred' });
     }
   }
 
@@ -113,9 +113,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
 
       return res.status(200).json(completeBundle);
-    } catch (error) {
+    } catch (error: any) {
       console.error('POST bundle error:', error);
-      return res.status(500).json({ error: error.message });
+      return res.status(500).json({ error: error.message || 'An unexpected error occurred' });
     }
   }
 
