@@ -103,9 +103,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
 
       return res.status(200).json(completeBundle);
-    } catch (error) {
+    } catch (error: any) {
       console.error('PUT bundle error:', error);
-      return res.status(500).json({ error: error.message });
+      return res.status(500).json({ error: error.message || 'An unexpected error occurred' });
     }
   }
 
@@ -141,9 +141,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
 
       return res.status(200).json({ message: 'Bundle deleted successfully' });
-    } catch (error) {
+    } catch (error: any) {
       console.error('DELETE bundle error:', error);
-      return res.status(500).json({ error: error.message });
+      return res.status(500).json({ error: error.message || 'An unexpected error occurred' });
     }
   }
 
