@@ -2,6 +2,11 @@ import { supabase } from '@/lib/supabaseClient';
 import { NextApiRequest, NextApiResponse } from 'next';
 import { createServerSupabaseClient } from '@supabase/auth-helpers-nextjs';
 
+interface BundleItem {
+  product_id: string;
+  quantity: number;
+}
+
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   // Initialize supabase server client with the request cookies
   const supabaseServerClient = createServerSupabaseClient({
@@ -71,7 +76,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
       // Insert bundle items if provided
       if (items && items.length > 0) {
-        const bundleItems = items.map(item => ({
+        const bundleItems = items.map((item: BundleItem) => ({
           bundle_id: bundle.id,
           product_id: item.product_id,
           quantity: item.quantity
