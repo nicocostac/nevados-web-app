@@ -1,10 +1,16 @@
 import { supabase } from '@/lib/supabaseClient';
 import { NextApiRequest, NextApiResponse } from 'next';
 import { createServerSupabaseClient } from '@supabase/auth-helpers-nextjs';
+import { Bundle, BundleItem } from '@/types/models';
+import { ApiError, handleError } from '@/types/error';
 
-interface BundleItem {
-  product_id: string;
-  quantity: number;
+interface CreateBundleRequest {
+  name: string;
+  description: string;
+  total_price: number;
+  start_date: string;
+  end_date?: string | null;
+  items: Omit<BundleItem, 'product' | 'bundle_id' | 'created_at' | 'updated_at'>[];
 }
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
@@ -32,20 +38,65 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         `)
         .order('created_at', { ascending: false });
 
-      if (error) throw error;
-      return res.status(200).json(bundles);
-    } catch (error: any) {
-      console.error('GET bundles error:', error);
-      return res.status(500).json({ error: error.message || 'An unexpected error occurred' });
+      if (error) {
+        throw error;
+      }
+
+      if (!bundles) {
+        return res.status(404).json({ 
+          error: {
+            message: 'No bundles found',
+            code: 'NOT_FOUND'
+          } as ApiError 
+        });
+      }
+
+      const completeBundles = bundles.map(bundle => ({
+        ...bundle,
+        items: bundle.items || []
+      }));
+
+      return res.status(200).json(completeBundles);
+    } catch (error) {
+      const apiError = handleError(error);
+      console.error('GET bundles error:', apiError);
+      return res.status(500).json({ error: apiError });
     }
   }
 
   if (req.method === 'POST') {
     try {
-      const { name, description, total_price, items } = req.body;
+      const { name, description, total_price, start_date, end_date, items } = req.body as CreateBundleRequest;
 
-      if (!name || !total_price) {
-        return res.status(400).json({ error: 'Name and total price are required' });
+      // Validate required fields
+      if (!name || !total_price || !start_date || !items) {
+        return res.status(400).json({ 
+          error: {
+            message: 'Missing required fields: name, total_price, start_date, items',
+            code: 'INVALID_PARAMETER'
+          } as ApiError 
+        });
+      }
+
+      // Validate items array
+      if (!Array.isArray(items) || items.length === 0) {
+        return res.status(400).json({ 
+          error: {
+            message: 'Bundle must have at least one item',
+            code: 'INVALID_PARAMETER'
+          } as ApiError 
+        });
+      }
+
+      // Check if all items have required fields
+      const hasInvalidItems = items.some(item => !item.product_id || !item.quantity);
+      if (hasInvalidItems) {
+        return res.status(400).json({ 
+          error: {
+            message: 'All items must have product_id and quantity',
+            code: 'INVALID_PARAMETER'
+          } as ApiError 
+        });
       }
 
       // Get current session
@@ -55,43 +106,48 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         return res.status(401).json({ error: 'Not authenticated' });
       }
 
-      // Insert the bundle
+      // Create the bundle
       const { data: bundle, error: bundleError } = await supabaseServerClient
         .from('mixed_bundles')
-        .insert({
+        .insert([{
           name,
-          description: description || '',
+          description,
           total_price,
+          start_date,
+          end_date,
           status: 'active',
           created_by: session.user.id,
           updated_by: session.user.id
-        })
+        }])
         .select()
         .single();
 
       if (bundleError) {
-        console.error('Bundle insert error:', bundleError);
         throw bundleError;
       }
 
-      // Insert bundle items if provided
-      if (items && items.length > 0) {
-        const bundleItems = items.map((item: BundleItem) => ({
-          bundle_id: bundle.id,
-          product_id: item.product_id,
-          quantity: item.quantity
-        }));
+      if (!bundle) {
+        throw new Error('Failed to create bundle');
+      }
 
-        const { error: itemsError } = await supabaseServerClient
-          .from('mixed_bundle_items')
-          .insert(bundleItems);
+      // Create bundle items
+      const bundleItems = items.map(item => ({
+        bundle_id: bundle.id,
+        product_id: item.product_id,
+        quantity: item.quantity
+      }));
 
-        if (itemsError) {
-          console.error('Bundle items insert error:', itemsError);
-          // If adding items fails, delete the bundle
-          await supabaseServerClient.from('mixed_bundles').delete().eq('id', bundle.id);
-          throw itemsError;
-        }
+      const { error: itemsError } = await supabaseServerClient
+        .from('mixed_bundle_items')
+        .insert(bundleItems);
+
+      if (itemsError) {
+        // If items creation fails, delete the bundle
+        await supabaseServerClient
+          .from('mixed_bundles')
+          .delete()
+          .eq('id', bundle.id);
+        throw itemsError;
       }
 
       // Fetch the complete bundle with items
@@ -113,16 +169,21 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         .single();
 
       if (fetchError) {
-        console.error('Fetch complete bundle error:', fetchError);
         throw fetchError;
       }
 
-      return res.status(200).json(completeBundle);
-    } catch (error: any) {
-      console.error('POST bundle error:', error);
-      return res.status(500).json({ error: error.message || 'An unexpected error occurred' });
+      return res.status(201).json(completeBundle);
+    } catch (error) {
+      const apiError = handleError(error);
+      console.error('POST bundle error:', apiError);
+      return res.status(500).json({ error: apiError });
     }
   }
 
-  return res.status(405).json({ error: 'Method not allowed' });
+  return res.status(405).json({ 
+    error: {
+      message: 'Method not allowed',
+      code: 'METHOD_NOT_ALLOWED'
+    } as ApiError 
+  });
 }

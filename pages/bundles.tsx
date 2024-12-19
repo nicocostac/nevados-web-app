@@ -24,29 +24,16 @@ import { useToast } from '@/components/ui/use-toast';
 import { supabase } from '@/lib/supabaseClient';
 import { requireAuth } from '@/lib/auth/requireAuth';
 import { X } from 'lucide-react';
+import { Bundle, BundleItem, Product } from '@/types/models';
+import { handleError } from '@/types/error';
 
-interface Product {
-  id: string;
-  name: string;
-  description: string;
-  unit_of_sale: string;
-}
-
-interface BundleItem {
-  product_id: string;
-  quantity: number;
-  product: Product;
-}
-
-interface Bundle {
-  id: string;
+interface NewBundle {
   name: string;
   description: string;
   total_price: number;
-  status: string;
   start_date: string;
   end_date: string | null;
-  items: BundleItem[];
+  items: Omit<BundleItem, 'product' | 'bundle_id' | 'created_at' | 'updated_at'>[];
 }
 
 function BundlesPage() {
@@ -54,14 +41,14 @@ function BundlesPage() {
   const [products, setProducts] = useState<Product[]>([]);
   const [isOpen, setIsOpen] = useState(false);
   const [isEditMode, setIsEditMode] = useState(false);
-  const [selectedBundle, setSelectedBundle] = useState(null);
-  const [newBundle, setNewBundle] = useState({
+  const [selectedBundle, setSelectedBundle] = useState<Bundle | null>(null);
+  const [newBundle, setNewBundle] = useState<NewBundle>({
     name: '',
     description: '',
     total_price: 0,
     start_date: new Date().toISOString().split('T')[0],
-    end_date: null as string | null,
-    items: [] as { product_id: string; quantity: number }[],
+    end_date: null,
+    items: [],
   });
   const { toast } = useToast();
 
@@ -73,7 +60,6 @@ function BundlesPage() {
   const fetchBundles = async () => {
     try {
       console.log('Fetching bundles...');
-      // Fetch bundles with their items in a single query
       const { data: bundles, error } = await supabase
         .from('mixed_bundles')
         .select(`
@@ -85,13 +71,12 @@ function BundlesPage() {
         `)
         .order('created_at', { ascending: false });
 
-      console.log('Fetched bundles:', bundles);
       if (error) {
-        toast({
-          title: 'Error',
-          description: error.message,
-          variant: 'destructive',
-        });
+        throw error;
+      }
+
+      if (!bundles) {
+        console.error('No bundles data returned');
         return;
       }
 
@@ -103,31 +88,42 @@ function BundlesPage() {
 
       setBundles(bundlesWithItems);
     } catch (error) {
-      console.error('Error fetching bundles:', error);
+      const apiError = handleError(error);
+      console.error('Error fetching bundles:', apiError);
       toast({
         title: 'Error',
-        description: error.message,
+        description: apiError.message,
         variant: 'destructive',
       });
     }
   };
 
   const fetchProducts = async () => {
-    const { data, error } = await supabase
-      .from('products')
-      .select('*')
-      .order('name');
+    try {
+      const { data, error } = await supabase
+        .from('products')
+        .select('*')
+        .order('name');
 
-    if (error) {
+      if (error) {
+        throw error;
+      }
+
+      if (!data) {
+        console.error('No products data returned');
+        return;
+      }
+
+      setProducts(data);
+    } catch (error) {
+      const apiError = handleError(error);
+      console.error('Error fetching products:', apiError);
       toast({
         title: 'Error',
-        description: error.message,
+        description: apiError.message,
         variant: 'destructive',
       });
-      return;
     }
-
-    setProducts(data);
   };
 
   const handleAddItem = () => {
@@ -137,7 +133,7 @@ function BundlesPage() {
     }));
   };
 
-  const handleItemChange = (index: number, field: string, value: string | number) => {
+  const handleItemChange = (index: number, field: keyof Pick<BundleItem, 'product_id' | 'quantity'>, value: string | number) => {
     const updatedItems = [...newBundle.items];
     // Ensure quantity is at least 1
     if (field === 'quantity' && typeof value === 'number' && value < 1) {
@@ -160,10 +156,9 @@ function BundlesPage() {
     }));
   };
 
-  const handleEdit = (bundle) => {
+  const handleEdit = (bundle: Bundle) => {
     setIsEditMode(true);
     setSelectedBundle(bundle);
-    // Map the bundle items correctly
     setNewBundle({
       name: bundle.name,
       description: bundle.description,
@@ -181,10 +176,11 @@ function BundlesPage() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      if (!newBundle.name || !newBundle.total_price) {
+      // Validate required fields
+      if (!newBundle.name || !newBundle.total_price || !newBundle.start_date) {
         toast({
           title: 'Validation Error',
-          description: 'Name and total price are required',
+          description: 'Name, total price, and start date are required',
           variant: 'destructive',
         });
         return;
@@ -239,10 +235,7 @@ function BundlesPage() {
           .delete()
           .eq('bundle_id', bundleId);
 
-        if (deleteError) {
-          console.error('Error deleting items:', deleteError);
-          throw new Error('Failed to delete existing items');
-        }
+        if (deleteError) throw deleteError;
 
         // Wait a moment to ensure deletion is complete
         await new Promise(resolve => setTimeout(resolve, 500));
@@ -251,50 +244,37 @@ function BundlesPage() {
         console.log('Creating new bundle:', bundleData);
         const { data: newBundleData, error: bundleError } = await supabase
           .from('mixed_bundles')
-          .insert([bundleData]) // Ensure we're passing an array with a single item
+          .insert([bundleData])
           .select()
           .single();
 
-        if (bundleError) {
-          console.error('Error creating bundle:', bundleError);
-          throw new Error('Failed to create bundle');
-        }
+        if (bundleError) throw bundleError;
         if (!newBundleData) throw new Error('Failed to create bundle - no data returned');
         
         bundleId = newBundleData.id;
         console.log('Created bundle with ID:', bundleId);
       }
 
-      // 3. Insert new items if any exist
-      const newItems = newBundle.items.map((item) => ({
+      // 3. Insert new items
+      const bundleItems = newBundle.items.map(item => ({
         bundle_id: bundleId,
         product_id: item.product_id,
         quantity: item.quantity,
       }));
       
-      console.log('Inserting bundle items:', newItems);
+      console.log('Inserting bundle items:', bundleItems);
       const { error: itemsError } = await supabase
         .from('mixed_bundle_items')
-        .insert(newItems);
+        .insert(bundleItems);
 
-      if (itemsError) {
-        console.error('Error inserting items:', itemsError);
-        // If items insertion fails and this is a new bundle, delete the bundle
-        if (!isEditMode) {
-          await supabase
-            .from('mixed_bundles')
-            .delete()
-            .eq('id', bundleId);
-        }
-        throw new Error('Failed to insert bundle items');
-      }
+      if (itemsError) throw itemsError;
 
       toast({
         title: 'Success',
         description: `Bundle ${isEditMode ? 'updated' : 'created'} successfully!`,
       });
 
-      // Reset everything
+      // Reset form
       setNewBundle({
         name: '',
         description: '',
@@ -310,10 +290,11 @@ function BundlesPage() {
       // Refresh the list
       await fetchBundles();
     } catch (error) {
-      console.error('Error saving bundle:', error);
+      const apiError = handleError(error);
+      console.error('Error saving bundle:', apiError);
       toast({
         title: 'Error',
-        description: error.message,
+        description: apiError.message,
         variant: 'destructive',
       });
     }
@@ -325,32 +306,21 @@ function BundlesPage() {
     }
 
     try {
-      console.log('Deleting bundle items for bundle:', bundleId);
       // First delete all bundle items
       const { error: itemsError } = await supabase
         .from('mixed_bundle_items')
         .delete()
         .eq('bundle_id', bundleId);
 
-      if (itemsError) {
-        console.error('Error deleting bundle items:', itemsError);
-        throw new Error('Failed to delete bundle items');
-      }
+      if (itemsError) throw itemsError;
 
-      // Wait a moment to ensure items are deleted
-      await new Promise(resolve => setTimeout(resolve, 500));
-
-      console.log('Deleting bundle:', bundleId);
       // Then delete the bundle itself
       const { error: bundleError } = await supabase
         .from('mixed_bundles')
         .delete()
         .eq('id', bundleId);
 
-      if (bundleError) {
-        console.error('Error deleting bundle:', bundleError);
-        throw new Error('Failed to delete bundle. Please check RLS policies.');
-      }
+      if (bundleError) throw bundleError;
 
       toast({
         title: 'Success',
@@ -360,10 +330,11 @@ function BundlesPage() {
       // Refresh the bundles list
       await fetchBundles();
     } catch (error) {
-      console.error('Error deleting bundle:', error);
+      const apiError = handleError(error);
+      console.error('Error deleting bundle:', apiError);
       toast({
         title: 'Error',
-        description: error.message,
+        description: apiError.message,
         variant: 'destructive',
       });
     }
