@@ -32,21 +32,23 @@ import {
   Legend
 } from 'recharts'
 import { Card, ProgressBar } from '@tremor/react'
-import { 
-  format, 
-  startOfDay, 
-  endOfDay, 
-  subDays, 
-  subMonths, 
-  subYears, 
-  addDays, 
-  addMonths, 
-  addYears,
+import {
   startOfWeek,
   endOfWeek,
-  eachDayOfInterval,
-  isSameMonth,
-  lastDayOfMonth
+  startOfMonth,
+  endOfMonth,
+  startOfYear,
+  endOfYear,
+  addDays,
+  addMonths,
+  addYears,
+  format,
+  min,
+  subMonths,
+  subDays,
+  subYears,
+  parseISO,
+  isSameMonth
 } from 'date-fns'
 
 function Dashboard() {
@@ -106,23 +108,37 @@ function Dashboard() {
         break;
       }
       case 'month': {
-        // Get the start and end date of the week
-        const weekDate = new Date(Date.UTC(year, month - 1, day))
-        const weekStart = startOfWeek(weekDate, { weekStartsOn: 1 })
-        const weekEnd = endOfWeek(weekDate, { weekStartsOn: 1 })
-        const currentMonth = month
-
-        // Adjust start date if it's in previous month
-        const startDay = isSameMonth(weekStart, weekDate) 
-          ? format(weekStart, 'dd')
-          : '01'
+        const date = new Date(Date.UTC(year, month - 1, day))
+        const monthStart = new Date(Date.UTC(year, month - 1, 1))
+        const monthEnd = new Date(Date.UTC(year, month, 0))
         
-        // Adjust end date if it's in next month
-        const endDay = isSameMonth(weekEnd, weekDate)
-          ? format(weekEnd, 'dd')
-          : format(lastDayOfMonth(weekDate), 'dd')
-
-        result = `${startDay}-${endDay}/${currentMonth}`
+        let weekStart, weekEnd
+        
+        // First week of the month - always start from day 1
+        if (day <= 7 && startOfWeek(date, { weekStartsOn: 1 }) <= monthStart) {
+          weekStart = monthStart  // This will be the 1st of the month
+          weekEnd = endOfWeek(monthStart, { weekStartsOn: 1 })
+          if (weekEnd > monthEnd) weekEnd = monthEnd
+        }
+        // Last week of the month
+        else if (endOfWeek(date, { weekStartsOn: 1 }) >= monthEnd) {
+          weekStart = startOfWeek(monthEnd, { weekStartsOn: 1 })
+          if (weekStart < monthStart) weekStart = monthStart
+          weekEnd = monthEnd
+        }
+        // Regular weeks
+        else {
+          weekStart = startOfWeek(date, { weekStartsOn: 1 })
+          if (weekStart < monthStart) weekStart = monthStart
+          weekEnd = endOfWeek(date, { weekStartsOn: 1 })
+          if (weekEnd > monthEnd) weekEnd = monthEnd
+        }
+        
+        // Format the date range, ensuring we use the actual month start for the first week
+        const startDay = format(weekStart, 'dd')
+        const endDay = format(weekEnd, 'dd')
+        
+        result = `${startDay}-${endDay}/${month}`
         break;
       }
       case 'year': {
@@ -246,12 +262,12 @@ function Dashboard() {
           endDate = endOfWeek(currentDate, { weekStartsOn: 1 }) // End on Sunday
           break
         case 'month':
-          startDate = new Date(currentDate.getFullYear(), currentDate.getMonth(), 1) // Start of month
-          endDate = new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0) // End of month
+          startDate = startOfMonth(currentDate)
+          endDate = endOfMonth(currentDate)
           break
         case 'year':
-          startDate = new Date(currentDate.getFullYear(), 0, 1) // Start of year
-          endDate = new Date(currentDate.getFullYear(), 11, 31) // End of year
+          startDate = startOfYear(currentDate)
+          endDate = endOfYear(currentDate)
           break
       }
 
@@ -319,6 +335,9 @@ function Dashboard() {
         }))
       })
 
+      // Log first sale to see structure
+      console.log('First sale structure:', salesData.length > 0 ? salesData[0] : 'no sales')
+
       if (salesError) throw salesError
 
       // Fetch active clients with their sales in the selected period
@@ -336,15 +355,227 @@ function Dashboard() {
 
       if (activeClientsError) throw activeClientsError
 
-      // Count clients with sales in the selected period
-      const activeClientsCount = activeClientsData.filter(client => {
-        const hasRecentSales = client.sales?.some(sale => 
-          new Date(sale.sale_date) >= startDate
-        )
-        return hasRecentSales
-      }).length
+      // Calculate metrics
+      const totalRevenue = salesData.reduce((sum, sale) => sum + sale.total_amount, 0)
+      const totalOrders = salesData.length
 
-      // Calculate client activity change compared to previous period
+      // Calculate unique clients for the current time range
+      const uniqueClients = new Set()
+      const debugSales = new Map() // For debugging: track which sales belong to which client
+      
+      salesData.forEach(sale => {
+        const saleDate = parseISO(sale.sale_date)
+        let isInRange = false
+        let rangeType = ''
+        
+        if (timeRange === 'week') {
+          const weekStart = startOfWeek(currentDate, { weekStartsOn: 1 })
+          const weekEnd = endOfWeek(currentDate, { weekStartsOn: 1 })
+          weekEnd.setHours(23, 59, 59, 999)
+          
+          isInRange = saleDate >= weekStart && saleDate <= weekEnd
+          rangeType = 'week'
+          
+        } else if (timeRange === 'month') {
+          isInRange = isSameMonth(saleDate, currentDate)
+          rangeType = 'month'
+          
+        } else {
+          // For year view
+          isInRange = saleDate.getFullYear() === currentDate.getFullYear()
+          rangeType = 'year'
+        }
+        
+        // Debug logging for each sale
+        console.log(`${rangeType.toUpperCase()} Sale Check:`, {
+          clientName: sale.client?.name,
+          saleDate: saleDate.toISOString(),
+          currentDate: currentDate.toISOString(),
+          isInRange,
+          amount: sale.total_amount,
+          saleMonth: saleDate.getMonth(),
+          currentMonth: currentDate.getMonth(),
+          saleYear: saleDate.getFullYear(),
+          currentYear: currentDate.getFullYear()
+        })
+        
+        if (isInRange && sale.client?.name) {
+          uniqueClients.add(sale.client.name)
+          
+          // Track this sale for debugging
+          if (!debugSales.has(sale.client.name)) {
+            debugSales.set(sale.client.name, [])
+          }
+          debugSales.get(sale.client.name).push({
+            date: saleDate.toISOString(),
+            amount: sale.total_amount
+          })
+        }
+      })
+      
+      // Detailed debug output
+      console.log(`${timeRange.toUpperCase()} View Summary:`, {
+        totalUniqueClients: uniqueClients.size,
+        clientsList: Array.from(uniqueClients),
+        salesByClient: Object.fromEntries(debugSales),
+        currentDate: currentDate.toISOString(),
+        totalSales: salesData.length
+      })
+
+      const totalProducts = salesData.reduce((sum, sale) => sum + sale.items.reduce((itemSum, item) => itemSum + item.quantity, 0), 0)
+      const averageOrderValue = totalRevenue / totalOrders
+
+      // Process sales data for trends
+      const salesByDate = {}
+
+      if (timeRange === 'month') {
+        // 1. Get first and last day of the month
+        const firstDayOfMonth = startOfMonth(currentDate)
+        const lastDayOfMonth = endOfMonth(currentDate)
+        
+        // 2. Generate all weeks of the month
+        const weeks = []
+        let currentDay = firstDayOfMonth
+        
+        while (currentDay <= lastDayOfMonth) {
+          const weekStart = currentDay
+          const weekEnd = min([endOfWeek(currentDay, { weekStartsOn: 1 }), lastDayOfMonth])
+          
+          const weekKey = `${format(weekStart, 'dd')}-${format(weekEnd, 'dd')}/${format(weekStart, 'MM')}`
+          weeks.push(weekKey)
+          salesByDate[weekKey] = 0
+          
+          currentDay = addDays(weekEnd, 1)
+        }
+
+        console.log('Generated weeks:', weeks)
+        
+        // Track unmatched sales for debugging
+        const unmatchedSales = []
+        let totalMatched = 0
+        
+        // 3. Process sales data
+        salesData.forEach(sale => {
+          const saleDate = parseISO(sale.sale_date)
+          
+          // Skip if not in current month
+          if (!isSameMonth(saleDate, currentDate)) {
+            console.log('Skipping sale not in current month:', {
+              saleDate: sale.sale_date,
+              currentDate: currentDate.toISOString()
+            })
+            return
+          }
+          
+          let matched = false
+          // Find which week this sale belongs to
+          for (const weekKey of weeks) {
+            const [range, month] = weekKey.split('/')
+            const [startDay, endDay] = range.split('-')
+            
+            const weekStart = new Date(saleDate.getFullYear(), saleDate.getMonth(), parseInt(startDay))
+            weekStart.setHours(0, 0, 0, 0)
+            
+            const weekEnd = new Date(saleDate.getFullYear(), saleDate.getMonth(), parseInt(endDay))
+            weekEnd.setHours(23, 59, 59, 999)
+            
+            if (saleDate >= weekStart && saleDate <= weekEnd) {
+              console.log('Matched sale:', {
+                saleDate: sale.sale_date,
+                weekKey,
+                amount: sale.total_amount,
+                weekStart: weekStart.toISOString(),
+                weekEnd: weekEnd.toISOString()
+              })
+              salesByDate[weekKey] = (salesByDate[weekKey] || 0) + sale.total_amount
+              totalMatched += sale.total_amount
+              matched = true
+              break
+            }
+          }
+          
+          if (!matched) {
+            console.log('Unmatched sale:', {
+              saleDate: sale.sale_date,
+              amount: sale.total_amount
+            })
+            unmatchedSales.push({
+              date: sale.sale_date,
+              amount: sale.total_amount
+            })
+          }
+        })
+
+        console.log('Sales by week:', salesByDate)
+        console.log('Total matched amount:', totalMatched)
+        console.log('Unmatched sales:', unmatchedSales)
+        console.log('Total revenue:', salesData.reduce((sum, sale) => sum + sale.total_amount, 0))
+      } else {
+        // Handle week and year views (unchanged)
+        salesData.forEach(sale => {
+          const groupKey = formatDateForRange(sale.sale_date, timeRange)
+          if (groupKey) {
+            salesByDate[groupKey] = (salesByDate[groupKey] || 0) + sale.total_amount
+          }
+        })
+      }
+
+      // Convert to array format
+      let salesTrendsArray
+      if (timeRange === 'month') {
+        // For month view, maintain the order of weeks array
+        salesTrendsArray = Object.entries(salesByDate)
+          .map(([date, amount]) => ({
+            date,
+            amount,
+            trend: 0
+          }))
+      } else {
+        // For week and year views, sort as before
+        salesTrendsArray = Object.entries(salesByDate)
+          .map(([date, amount]) => ({
+            date,
+            amount,
+            trend: 0
+          }))
+          .filter(item => item.date && item.date !== 'null')
+          .sort((a, b) => {
+            if (timeRange === 'week') {
+              // Parse the dates properly for comparison
+              const [aDay, aMonth] = a.date.split('/')
+              const [bDay, bMonth] = b.date.split('/')
+              
+              // Create Date objects for comparison
+              const aDate = new Date(currentDate.getFullYear(), parseInt(aMonth) - 1, parseInt(aDay))
+              const bDate = new Date(currentDate.getFullYear(), parseInt(bMonth) - 1, parseInt(bDay))
+              
+              return aDate - bDate
+            } else {
+              const monthToNumber = {
+                'Jan': 1, 'Feb': 2, 'Mar': 3, 'Apr': 4, 'May': 5, 'Jun': 6,
+                'Jul': 7, 'Aug': 8, 'Sep': 9, 'Oct': 10, 'Nov': 11, 'Dec': 12
+              }
+              return monthToNumber[a.date] - monthToNumber[b.date]
+            }
+          })
+      }
+
+      // Calculate moving average for trend line
+      const windowSize = getWindowSize(timeRange)
+      for (let i = 0; i < salesTrendsArray.length; i++) {
+        let sum = 0
+        let count = 0
+        for (let j = Math.max(0, i - windowSize + 1); j <= i; j++) {
+          sum += salesTrendsArray[j].amount
+          count++
+        }
+        salesTrendsArray[i].trend = Math.round(sum / count)
+      }
+
+      console.log('Final salesTrendsArray:', salesTrendsArray)
+
+      // Calculate metrics
+      const activeClientsCount = uniqueClients.size
       const previousPeriodStart = getPreviousPeriodStart(startDate, timeRange)
 
       const previousActiveClientsCount = activeClientsData.filter(client => {
@@ -357,113 +588,6 @@ function Dashboard() {
 
       const clientsGrowthRate = previousActiveClientsCount === 0 ? 100 :
         ((activeClientsCount - previousActiveClientsCount) / previousActiveClientsCount) * 100
-
-      // Process sales data for trends
-      const salesByDate = {}
-      console.log('Processing sales data:', {
-        totalSales: salesData.length,
-        timeRange,
-        sampleSales: salesData.slice(0, 3).map(sale => ({
-          id: sale.id,
-          sale_date: sale.sale_date,
-          formatted_date: formatDateForRange(sale.sale_date, timeRange)
-        }))
-      })
-
-      salesData.forEach(sale => {
-        const groupKey = formatDateForRange(sale.sale_date, timeRange)
-        
-        console.log('Processing sale:', {
-          sale_id: sale.id,
-          sale_date: sale.sale_date,
-          groupKey,
-          amount: sale.total_amount
-        })
-        
-        salesByDate[groupKey] = (salesByDate[groupKey] || 0) + sale.total_amount
-      })
-
-      console.log('Sales grouped by date:', salesByDate)
-
-      // Convert to array and sort by date
-      const salesTrendsArray = Object.entries(salesByDate)
-        .map(([date, amount]) => ({
-          date,
-          amount,
-          trend: 0 // Initialize trend value
-        }))
-
-      console.log('Sales trends array before sorting:', salesTrendsArray)
-
-      console.log('Sorting array:', {
-        timeRange,
-        before: salesTrendsArray.map(item => ({
-          date: item.date,
-          amount: item.amount
-        }))
-      })
-
-      salesTrendsArray.sort((a, b) => {
-        if (timeRange === 'week') {
-          // Extract day number from "Day, DD" format
-          const aDay = parseInt(a.date.split(', ')[1])
-          const bDay = parseInt(b.date.split(', ')[1])
-          console.log('Week sorting:', {
-            a: a.date,
-            b: b.date,
-            aDay,
-            bDay
-          })
-          return aDay - bDay
-        } else if (timeRange === 'month') {
-          return parseInt(a.date.split('-')[0]) - parseInt(b.date.split('-')[0])
-        } else {
-          // For year view, convert month abbreviations to numbers (Jan=1, Feb=2, etc)
-          const monthToNumber = {
-            'Jan': 1, 'Feb': 2, 'Mar': 3, 'Apr': 4, 'May': 5, 'Jun': 6,
-            'Jul': 7, 'Aug': 8, 'Sep': 9, 'Oct': 10, 'Nov': 11, 'Dec': 12
-          }
-          console.log('Month comparison:', {
-            a: a.date,
-            b: b.date,
-            aNum: monthToNumber[a.date],
-            bNum: monthToNumber[b.date]
-          })
-          return monthToNumber[a.date] - monthToNumber[b.date]
-        }
-      })
-
-      console.log('Sorting result:', {
-        timeRange,
-        after: salesTrendsArray.map(item => ({
-          date: item.date,
-          amount: item.amount
-        }))
-      })
-
-      console.log('Sales trends array after sorting:', salesTrendsArray)
-
-      // Calculate moving average for trend line
-      const windowSize = getWindowSize(timeRange)
-      for (let i = 0; i < salesTrendsArray.length; i++) {
-        let sum = 0
-        let count = 0
-        
-        // Look back up to windowSize periods
-        for (let j = Math.max(0, i - windowSize + 1); j <= i; j++) {
-          sum += salesTrendsArray[j].amount
-          count++
-        }
-        
-        salesTrendsArray[i].trend = Math.round(sum / count)
-      }
-
-      const salesTrends = salesTrendsArray
-
-      // Calculate metrics
-      const totalRevenue = salesData.reduce((sum, sale) => sum + sale.total_amount, 0)
-      const productsSold = salesData.reduce((sum, sale) => 
-        sum + sale.items.reduce((itemSum, item) => itemSum + item.quantity, 0), 0)
 
       // Fetch previous period sales
       const { data: previousSales } = await supabase
@@ -485,7 +609,7 @@ function Dashboard() {
         ((totalRevenue - previousRevenue) / previousRevenue) * 100
 
       const productsGrowthRate = previousProductsSold === 0 ? 100 :
-        ((productsSold - previousProductsSold) / previousProductsSold) * 100
+        ((totalProducts - previousProductsSold) / previousProductsSold) * 100
 
       // Calculate top products
       const productSales = {}
@@ -515,11 +639,11 @@ function Dashboard() {
         totalRevenue,
         activeClients: activeClientsCount,
         activeClientsGrowth: Math.round(clientsGrowthRate * 100) / 100,
-        productsSold,
+        productsSold: totalProducts,
         productsGrowthRate: Math.round(productsGrowthRate * 100) / 100,
         growthRate: Math.round(growthRate * 100) / 100,
         recentSales: salesData.slice(0, 5),
-        salesTrends,
+        salesTrends: salesTrendsArray,
         topProducts
       })
     } catch (err) {
@@ -825,7 +949,7 @@ function Dashboard() {
           {dashboardData.salesTrends.length > 0 ? (
             <ResponsiveContainer width="100%" height="100%">
               <ComposedChart 
-                data={timeRange === 'week' ? [...dashboardData.salesTrends].reverse() : dashboardData.salesTrends}
+                data={dashboardData.salesTrends}
                 margin={{ top: 20, right: 30, bottom: 20, left: 60 }}
                 height={400}
               >
