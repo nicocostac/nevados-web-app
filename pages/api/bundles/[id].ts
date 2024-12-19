@@ -1,6 +1,11 @@
 import { createServerSupabaseClient } from '@supabase/auth-helpers-nextjs';
 import { NextApiRequest, NextApiResponse } from 'next';
 
+interface BundleItem {
+  product_id: string;
+  quantity: number;
+}
+
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   const { id } = req.query;
 
@@ -58,7 +63,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
       // Insert new items if provided
       if (items && items.length > 0) {
-        const bundleItems = items.map(item => ({
+        const bundleItems = items.map((item: BundleItem) => ({
           bundle_id: id,
           product_id: item.product_id,
           quantity: item.quantity
